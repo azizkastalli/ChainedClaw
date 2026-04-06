@@ -1,0 +1,35 @@
+services:
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw
+    user: root
+    environment:
+      - APP_HOME=/app
+      - OPENCLAW_GATEWAY_BIND=0.0.0.0
+    volumes:
+      - openclaw-data:/root/.openclaw
+    networks:
+      - openclaw-net
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    container_name: openclaw-nginx
+    ports:
+      - "8090:80"  # HTTP
+      - "8490:443"  # Uncomment for HTTPS
+    volumes:
+      - ./nginx:/etc/nginx:ro
+    networks:
+      - openclaw-net
+    depends_on:
+      - openclaw
+    restart: unless-stopped
+
+networks:
+  openclaw-net:
+    driver: bridge
+
+volumes:
+  openclaw-data:
+    name: openclaw-datanode
