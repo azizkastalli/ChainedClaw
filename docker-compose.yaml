@@ -8,6 +8,10 @@ services:
       - OPENCLAW_GATEWAY_BIND=0.0.0.0
     volumes:
       - openclaw-data:/root/.openclaw
+      - openclaw-ssh:/root/.ssh
+      - ./config.json:/config.json:ro
+      - ./scripts/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
     networks:
       - openclaw-net
     restart: unless-stopped
@@ -16,8 +20,8 @@ services:
     image: nginx:latest
     container_name: openclaw-nginx
     ports:
-      - "8090:80"  # HTTP
-      - "8490:443"  # Uncomment for HTTPS
+      - "${NGINX_HTTP_PORT:-8080}:80"
+      - "${NGINX_HTTPS_PORT:-8443}:443"
     volumes:
       - ./nginx:/etc/nginx:ro
     networks:
@@ -33,3 +37,5 @@ networks:
 volumes:
   openclaw-data:
     name: openclaw-datanode
+  openclaw-ssh:
+    name: openclaw-sshkeys
