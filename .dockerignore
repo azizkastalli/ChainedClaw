@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.local
+*.md
+
+# Secrets
+secrets/
+.ssh/
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Temp
+*.tmp
+*.swp

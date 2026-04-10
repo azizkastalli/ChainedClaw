@@ -1,0 +1,13 @@
+{
+  "ssh_hosts": [
+    {
+      "name": "example-host",
+      "hostname": "192.168.1.100",
+      "user": "your-username",
+      "strict_host_key_checking": true,
+      "project_paths": [
+        "/path/to/your/project"
+      ]
+    }
+  ]
+}

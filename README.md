@@ -6,17 +6,22 @@ AI agent platform with SSH bridge to your local GPU machine.
 
 ### 1. Configure
 
+Copy the example files and customize them with your settings:
+
+```bash
+cp .env.example .env
+cp config.example.json config.json
+```
+
 Edit `.env` with your settings:
 
 ```bash
 # Nginx ports
 NGINX_HTTP_PORT=8090
-NGINX_HTTPS_PORT=8490
 
 # SSH chroot settings
 AGENT_USER=openclaw-bot
 CHROOT_BASE=/srv/chroot/openclaw-bot
-PROJECT_PATH=/home/aziz/Desktop/NEDO_RnD    # <-- your project directory
 ```
 
 Edit `config.json` with your SSH host details:
@@ -28,32 +33,51 @@ Edit `config.json` with your SSH host details:
       "name": "my-host",
       "hostname": "172.23.0.1",
       "user": "openclaw-bot",
-      "strict_host_key_checking": true
+      "strict_host_key_checking": true,
+      "project_paths": ["/path/to/your/project"]
     }
   ]
 }
 ```
 
-### 2. Start Services
+> **Tip:** When connecting from a Docker container to its host machine, use the Docker default gateway IP (typically `172.17.0.1` or check with `ip route | grep default` inside the container).
+
+> **Note:** `.env` and `config.json` are excluded from git (see `.gitignore`) to keep your secrets safe. Never commit these files.
+
+### 2. Initialize SSH Keys (on host)
+
+```bash
+sudo bash scripts/ssh_key/init_keys.sh
+```
+
+This generates Ed25519 keys in `.ssh/` directory on the host.
+
+### 3. Initialize Dashboard Auth (on host)
+
+```bash
+sudo bash scripts/nginx/init_htpasswd.sh
+```
+
+### 4. Start Services
 
 ```bash
 docker compose up -d
 ```
 
 This starts:
-- **openclaw** — AI agent gateway (generates SSH keys on first run)
+- **openclaw** — AI agent gateway (SSH keys mounted read-only from host)
 - **openclaw-nginx** — Reverse proxy on port `$NGINX_HTTP_PORT`
 
-### 3. Set Up SSH Tunnel
+### 5. Set Up Chroot on Target Hosts
 
-The SSH tunnel lets the OpenClaw agent access your project files on the host machine through a secure chroot jail.
+On each host that openclaw will SSH into:
 
 ```bash
-sudo bash scripts/setup_bot_ssh.sh
+sudo bash scripts/chroot_jail/jail_set.sh my-host
 sudo systemctl reload sshd
 ```
 
-### 4. Verify
+### 6. Verify
 
 ```bash
 docker exec -it openclaw ssh my-host whoami
@@ -71,30 +95,33 @@ Open the dashboard at `http://localhost:8090`.
 
 | Command | Description |
 |---------|-------------|
-| `sudo bash scripts/setup_bot_ssh.sh` | Set up chroot jail, user, SSH keys, sshd config |
-| `sudo bash scripts/cleanup_bot_ssh.sh` | Tear down everything (chroot, user, sshd config) |
-| `sudo bash scripts/add_key.sh` | Re-sync SSH key after container restart |
+| `sudo bash scripts/ssh_key/init_keys.sh` | Generate SSH keys on host |
+| `sudo bash scripts/chroot_jail/jail_set.sh <host>` | Set up chroot jail, user, SSH keys, sshd config |
+| `sudo bash scripts/chroot_jail/jail_break.sh <host>` | Tear down everything (chroot, user, sshd config) |
+| `sudo bash scripts/ssh_key/add.sh <host>` | Re-sync SSH key after container restart |
 | `sudo systemctl reload sshd` | Apply sshd config changes |
 
 > After any container recreate (`docker compose down && up`), re-sync the key:
 > ```bash
-> sudo bash scripts/add_key.sh && sudo systemctl reload sshd
+> sudo bash scripts/ssh_key/add.sh my-host && sudo systemctl reload sshd
 > ```
 
 ## Architecture
 
 ```
-┌─────────────────────┐     SSH (ed25519)      ┌────────────────────────────────┐
+┌─────────────────────┐     SSH (ed25519)       ┌────────────────────────────────┐
 │  OpenClaw Container │ ──────────────────────► │  Host Machine                  │
-│  key: id_openclaw   │  user: openclaw-bot     │  Chroot: /srv/chroot/          │
-│  known_hosts pinned │  StrictHostKey: yes     │    home/openclaw-bot/ ──►      │
-└─────────────────────┘                         │    bind mount to PROJECT_PATH  │
-        │                                       └────────────────────────────────┘
-        │ HTTP :8090
+│  user: 1000:1000    │  user: openclaw-bot     │  Chroot: /srv/chroot/          │
+│  read_only: true    │  StrictHostKey: yes     │    home/openclaw-bot/ ──►      │
+│  cap_drop: ALL      │                         │    bind mount to PROJECT_PATH  │
+└─────────────────────┘                         └────────────────────────────────┘
+        │
+        │ HTTP :8090 (localhost only)
         ▼
 ┌─────────────────────┐
 │  Nginx Reverse Proxy│
 │  Dashboard + API    │
+│  Basic Auth enabled │
 └─────────────────────┘
 ```
 
@@ -102,25 +129,44 @@ Open the dashboard at `http://localhost:8090`.
 - Ed25519 key authentication (no passwords)
 - Host key pinned via `known_hosts` at startup
 - Chroot jail isolates agent from host filesystem
+- SSH binaries removed from chroot (cannot jump to other hosts)
 - `/proc` and `/sys` mounted read-only
 - TCP forwarding and tunneling disabled
-- SSH keys persist in Docker volume `openclaw-sshkeys`
+- Container runs as non-root user (UID 1000)
+- Read-only root filesystem with `cap_drop: ALL`
+- SSH keys generated on host, mounted read-only into container
 
 ## File Structure
 
 ```
-.env                    # All configuration (single source of truth)
-config.json             # SSH host definitions
+.env.example            # Example environment configuration (copy to .env)
+config.example.json     # Example SSH host definitions (copy to config.json)
+.env                    # Your local environment configuration (git-ignored)
+config.json             # Your SSH host definitions (git-ignored)
 docker-compose.yaml     # Container orchestration
 nginx/
   nginx.conf            # Reverse proxy config
   html/index.html       # Static landing page
+  .htpasswd             # Basic auth credentials (generated)
 scripts/
-  entrypoint.sh         # Container startup (key gen, SSH config)
-  setup_bot_ssh.sh      # Host-side chroot + SSH setup
-  cleanup_bot_ssh.sh    # Host-side teardown
-  add_key.sh            # Re-sync SSH key to host
+  entrypoint.sh         # Container startup (SSH config generation, known_hosts)
   ssh_tunnels.md        # Detailed SSH tunnel documentation
+  chroot_jail/
+    jail_set.sh         # Host-side chroot + SSH setup
+    jail_break.sh       # Host-side teardown
+  firewall/
+    setup_firewall.sh   # Host firewall management
+  nginx/
+    init_htpasswd.sh    # Generate .htpasswd for dashboard auth
+  ssh_key/
+    init_keys.sh        # Generate SSH keys on host
+    add.sh              # Add public key to remote host
+    remove.sh           # Remove public key from remote host
+.ssh/                   # SSH keys (host-managed, git-ignored)
+  id_openclaw           # Private key
+  id_openclaw.pub       # Public key
+  known_hosts           # Host keys
+.openclaw-data/         # Agent state and data (bind mount)
 ```
 
 ## Troubleshooting
