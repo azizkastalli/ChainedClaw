@@ -30,3 +30,4 @@ nginx/*
 !nginx/nginx.conf
 
 .openclaw-data/
+.ssh/

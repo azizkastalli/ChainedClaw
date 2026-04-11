@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Load configuration from .env
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env"
+ENV_FILE="$SCRIPT_DIR/../../.env"
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "ERROR: .env file not found at $ENV_FILE"
@@ -30,7 +30,7 @@ fi
 # Remove authorized_keys from chroot
 CHROOT_SSH_DIR="$CHROOT_BASE/home/$AGENT_USER/.ssh"
 if [ -d "$CHROOT_SSH_DIR" ]; then
-    sudo rm -f "$CHROOT_SSH_DIR/authorized_keys"
+     rm -f "$CHROOT_SSH_DIR/authorized_keys"
     echo "  Removed: $CHROOT_SSH_DIR/authorized_keys"
 else
     echo "  WARNING: Chroot .ssh directory does not exist"
@@ -39,7 +39,7 @@ fi
 # Remove authorized_keys from real home (sshd resolves this for ChrootDirectory)
 REAL_SSH_DIR="/home/$AGENT_USER/.ssh"
 if [ -d "$REAL_SSH_DIR" ]; then
-    sudo rm -f "$REAL_SSH_DIR/authorized_keys"
+     rm -f "$REAL_SSH_DIR/authorized_keys"
     echo "  Removed: $REAL_SSH_DIR/authorized_keys"
 else
     echo "  Note: Real home .ssh directory does not exist"
@@ -51,4 +51,4 @@ echo "The authorized_keys have been removed from both:"
 echo "  - $CHROOT_BASE/home/$AGENT_USER/.ssh/"
 echo "  - /home/$AGENT_USER/.ssh/"
 echo ""
-echo "Run 'sudo systemctl reload sshd' to apply changes."
+echo "Run ' systemctl reload sshd' to apply changes."

@@ -51,7 +51,7 @@ for arg in "$@"; do
 done
 
 # Load configuration from .env (skip for --flush/--help)
-ENV_FILE="$SCRIPT_DIR/../.env"
+ENV_FILE="$SCRIPT_DIR/../../.env"
 if [ "$FLUSH_MODE" = false ] && [ "$SHOW_HELP" = false ]; then
     if [ ! -f "$ENV_FILE" ]; then
         echo "ERROR: .env file not found at $ENV_FILE"
@@ -61,15 +61,16 @@ if [ "$FLUSH_MODE" = false ] && [ "$SHOW_HELP" = false ]; then
 fi
 
 # Use unified variables with fallbacks
-CONFIG_JSON="${SCRIPT_DIR}/../config.json"
+CONFIG_JSON="${SCRIPT_DIR}/../../config.json"
+# NETWORK_NAME is available for future use (e.g., network-specific rules)
+# shellcheck disable=SC2034
 NETWORK_NAME="${OPENCLAW_NETWORK_NAME:-openclaw-net}"
 CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-openclaw}"
 FIREWALL_MARKER="OPENCLAW-FIREWALL"
 WATCH_MODE=false
 STRICT_MODE=false
 BLOCK_ALL=false
-PERSIST_MODE=true  # Default to persistent (changed from false)
-NO_PERSIST=false   # New flag to disable persistence
+PERSIST_MODE=true  # Default to persistent
 
 # Expected static IP for validation (must match docker-compose.yaml)
 EXPECTED_OPENCLAW_IP="${EXPECTED_OPENCLAW_IP:-172.28.0.10}"
@@ -77,7 +78,7 @@ EXPECTED_OPENCLAW_IP="${EXPECTED_OPENCLAW_IP:-172.28.0.10}"
 # Check if running as root (skip for --help)
 if [ "$SHOW_HELP" = false ]; then
     if [ "$EUID" -ne 0 ]; then
-        log_error "This script must be run as root (use sudo)"
+        log_error "This script must be run as root (use )"
         exit 1
     fi
 fi
@@ -97,7 +98,6 @@ for arg in "$@"; do
             log_warn "Block-all mode: Will block ALL non-SSH outbound traffic from container"
             ;;
         --no-persist)
-            NO_PERSIST=true
             PERSIST_MODE=false
             ;;
         --flush)
@@ -124,8 +124,7 @@ done
 install_inotify_tools() {
     if ! command -v inotifywait &> /dev/null; then
         log_info "Installing inotify-tools..."
-        apt-get update -qq && apt-get install -y -qq inotify-tools > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
+        if apt-get update -qq && apt-get install -y -qq inotify-tools > /dev/null 2>&1; then
             log_info "inotify-tools installed successfully"
         else
             log_error "Failed to install inotify-tools"
@@ -143,8 +142,7 @@ install_persistence() {
         # Pre-answer debconf prompts to avoid interactive prompts
         echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
         echo "iptables-persistent iptables-persistent/autosave_v6 boolean false" | debconf-set-selections
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent > /dev/null 2>&1
-        if [ $? -ne 0 ]; then
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent > /dev/null 2>&1; then
             log_warn "Could not install iptables-persistent. Trying netfilter-persistent..."
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq netfilter-persistent > /dev/null 2>&1
         fi
@@ -181,7 +179,7 @@ EOF
         fi
     else
         log_warn "Could not persist rules. Install iptables-persistent manually:"
-        log_warn "  sudo apt install iptables-persistent && sudo netfilter-persistent save"
+        log_warn "   apt install iptables-persistent &&  netfilter-persistent save"
     fi
 }
 
@@ -193,7 +191,7 @@ check_config() {
     fi
 
     if ! command -v jq &> /dev/null; then
-        log_error "jq is required but not installed. Install with: sudo apt install jq"
+        log_error "jq is required but not installed. Install with:  apt install jq"
         exit 1
     fi
 
@@ -378,6 +376,10 @@ run_watch_mode() {
     log_info "Starting watch mode - monitoring $CONFIG_JSON for changes..."
 
     # Initial apply
+    apply_firewall_rules
+
+    # Watch for changes
+    while inotifywait -q -e modify,move,create "$CONFIG_JSON" 2>/dev/null; do
         log_info "Detected change in config.json, reloading firewall rules..."
         apply_firewall_rules
         log_info "Rules reloaded."
@@ -416,7 +418,7 @@ fi
 if [ "$FLUSH_MODE" = true ]; then
     # Check if running as root for flush
     if [ "$EUID" -ne 0 ]; then
-        log_error "This script must be run as root (use sudo)"
+        log_error "This script must be run as root (use )"
         exit 1
     fi
     flush_openclaw_rules
@@ -459,5 +461,5 @@ else
 
     echo ""
     log_info "To auto-reload on config.json changes:"
-    log_info "  sudo bash scripts/setup_firewall.sh --watch"
+    log_info "   bash scripts/setup_firewall.sh --watch"
 fi

@@ -1,19 +1,14 @@
 #!/bin/bash
 #
-# Initialize OpenClaw SSH keys on the host
+# Initialize OpenClaw SSH keys in the project directory
 # Keys are generated outside the container and mounted read-only
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Source .env if it exists
-if [ -f "$ENV_FILE" ]; then
-    source "$ENV_FILE"
-fi
-
-SSH_DIR="/etc/openclaw/ssh"
+SSH_DIR="$PROJECT_ROOT/.ssh"
 KEY_FILE="$SSH_DIR/id_openclaw"
 KNOWN_HOSTS="$SSH_DIR/known_hosts"
 
@@ -27,18 +22,19 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    log_error "This script must be run as root (use sudo)"
-    exit 1
-fi
-
 echo "=== Initializing OpenClaw SSH Keys ==="
 echo "  Directory: $SSH_DIR"
 echo ""
 
-# Create directory
+# Create .ssh directory
 mkdir -p "$SSH_DIR"
+
+# Also create .openclaw-data directory if it doesn't exist
+OPENCLAW_DATA_DIR="$PROJECT_ROOT/.openclaw-data"
+if [ ! -d "$OPENCLAW_DATA_DIR" ]; then
+    mkdir -p "$OPENCLAW_DATA_DIR"
+    log_info "Created $OPENCLAW_DATA_DIR"
+fi
 
 # Generate key if not exists
 if [ ! -f "$KEY_FILE" ]; then
@@ -63,11 +59,21 @@ if [ ! -f "$KNOWN_HOSTS" ]; then
 fi
 
 # Set permissions
-chown -R root:root "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 chmod 600 "$KEY_FILE"
 chmod 644 "$KEY_FILE.pub"
 chmod 644 "$KNOWN_HOSTS"
+
+# Fix ownership for Docker container (user 1000)
+# When run with sudo, keys are created as root and container can't read them
+if [ "$EUID" -eq 0 ]; then
+    # Running as root (sudo) - set ownership to user 1000 for Docker
+    chown -R 1000:1000 "$SSH_DIR"
+    chown 1000:1000 "$OPENCLAW_DATA_DIR"
+    log_info "Set ownership to UID 1000 for Docker container access"
+else
+    log_info "Ownership kept as current user (running without sudo)"
+fi
 
 echo ""
 log_info "SSH key setup complete!"
@@ -78,7 +84,7 @@ cat "$KEY_FILE.pub"
 echo "----------------------------------------"
 echo ""
 echo "To pre-seed host keys (recommended for security):"
-echo "  sudo ssh-keyscan -H <hostname> >> $KNOWN_HOSTS"
+echo "  ssh-keyscan -H <hostname> >> $KNOWN_HOSTS"
 echo ""
 echo "Then start the container:"
 echo "  docker compose up -d"

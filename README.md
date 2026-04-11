@@ -47,7 +47,7 @@ Edit `config.json` with your SSH host details:
 ### 2. Initialize SSH Keys (on host)
 
 ```bash
-sudo bash scripts/ssh_key/init_keys.sh
+bash scripts/ssh_key/init_keys.sh
 ```
 
 This generates Ed25519 keys in `.ssh/` directory on the host.
@@ -70,12 +70,54 @@ This starts:
 
 ### 5. Set Up Chroot on Target Hosts
 
-On each host that openclaw will SSH into:
+The chroot setup script must run **on the target host itself** (not remotely from the OpenClaw host).
+
+#### Local Host (Same Machine)
+
+If the target host is the same machine running OpenClaw:
 
 ```bash
-sudo bash scripts/chroot_jail/jail_set.sh my-host
+bash scripts/chroot_jail/jail_set.sh my-host
 sudo systemctl reload sshd
 ```
+
+#### Remote Host (Different Machine)
+
+For remote machines, you need to:
+
+1. **Get the SSH public key** from the OpenClaw host:
+   ```bash
+   # On OpenClaw host
+   cat .ssh/id_openclaw.pub
+   ```
+
+2. **Copy scripts to the remote host**:
+   ```bash
+   # On OpenClaw host
+   scp -r scripts/ user@remote-host:/tmp/openclaw-scripts/
+   ```
+
+3. **Run setup on the remote host**:
+   ```bash
+   # SSH to remote host
+   ssh user@remote-host
+   
+   # On the remote host, run the setup
+   cd /tmp/openclaw-scripts
+   sudo bash scripts/chroot_jail/jail_set.sh my-host
+   sudo systemctl reload sshd
+   
+   # Clean up
+   rm -rf /tmp/openclaw-scripts
+   ```
+
+4. **Verify the connection** from OpenClaw host:
+   ```bash
+   docker exec -it openclaw ssh my-host whoami
+   # Expected: openclaw-bot
+   ```
+
+> **Note:** The `hostname` in `config.json` should be the remote host's IP address or hostname that the OpenClaw container can reach.
 
 ### 6. Verify
 

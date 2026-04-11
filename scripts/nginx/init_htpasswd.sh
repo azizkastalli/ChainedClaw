@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env"
+ENV_FILE="$SCRIPT_DIR/../../.env"
 
 # Source .env if it exists
 if [ -f "$ENV_FILE" ]; then
@@ -28,7 +28,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    log_error "This script must be run as root (use sudo)"
+    log_error "This script must be run as root (use )"
     exit 1
 fi
 

@@ -23,7 +23,7 @@ HOME_DIR="${HOME:-/home/openclaw}"
 SSH_DIR="$HOME_DIR/.ssh"
 KEY_FILE="$SSH_DIR/id_openclaw"
 CONFIG_FILE="$SSH_DIR/config"
-CONFIG_JSON="/config.json"
+export CONFIG_JSON="/config.json"
 
 # 2. Check if SSH key exists (should be mounted read-only from host)
 if [ ! -f "$KEY_FILE" ]; then
@@ -79,11 +79,13 @@ try:
         for host in config['ssh_hosts']:
             name = host.get('name', 'unknown')
             hostname = host.get('hostname', '')
+            port = host.get('port', 22)
             user = host.get('user', 'root')
             strict_check = host.get('strict_host_key_checking', True)
             
             print(f"Host {name}")
             print(f"    HostName {hostname}")
+            print(f"    Port {port}")
             print(f"    User {user}")
             print(f"    IdentityFile {KEY_FILE}")
             print(f"    StrictHostKeyChecking {'yes' if strict_check else 'no'}")
