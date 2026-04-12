@@ -6,7 +6,7 @@ This guide explains the SSH tunnel architecture used by OpenClaw to access your 
 
 1. SSH keys are generated on the **host** (not inside the container) using `scripts/ssh_key/init_keys.sh`
 2. Keys are bind-mounted into the container at `/home/openclaw/.ssh/` (read-only)
-3. The container's entrypoint generates SSH config from `config.json` and pre-seeds `known_hosts`
+3. The container's entrypoint generates SSH config from `config.json` and pre-seeds `known_hosts` via `ssh-keyscan` — but **only on first boot** (when `known_hosts` is empty and writable). If the file already has entries or is read-only, the scan is skipped
 4. The `jail_set.sh` script creates a chroot jail on the target host and installs the public key
 5. The container connects via SSH to execute commands on your project files
 6. Project files are bind-mounted directly into the chroot user's home directory
@@ -115,14 +115,25 @@ EXCLUDE_BINARIES="ssh scp sftp ssh-keygen ssh-keyscan ssh-agent ssh-add nc netca
 
 for binary in /usr/bin/*; do
     binary_name=$(basename "$binary")
-    # Skip excluded binaries
+    skip=false
     for exclude in $EXCLUDE_BINARIES; do
         if [ "$binary_name" = "$exclude" ]; then
-            continue 2  # Skip this binary
+            skip=true
+            break
         fi
     done
-    sudo ln -sf "$binary" "$CHROOT_BASE/usr/bin/$binary_name"
+    if [ "$skip" = false ]; then
+        ln -sf "$binary" "$CHROOT_BASE/usr/bin/$binary_name" 2>/dev/null || true
+    fi
 done
+```
+
+Project paths for a given host are looked up from `config.json` using `jq --arg` (safe against injection regardless of hostname content):
+
+```bash
+jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .project_paths[]' \
+    config.json
 ```
 
 ### sshd Configuration
@@ -140,7 +151,7 @@ Match User openclaw-bot
 ### Key Points
 
 - **No password auth** — key-based only
-- **Host key pinned** — `known_hosts` pre-seeded at container startup
+- **Host key pinned** — `known_hosts` pre-seeded on first boot (empty file); skipped on subsequent starts to preserve trusted keys. Pre-seed manually for best security: `ssh-keyscan -H <hostname> >> .ssh/known_hosts`
 - **`StrictHostKeyChecking yes`** — rejects MITM attacks
 - **Read-only system mounts** — `/proc` and `/sys` are mounted as dedicated read-only filesystems (not bind mounts) to prevent read-only propagation to the host
 - **No TCP forwarding** — prevents port-forward abuse
@@ -192,11 +203,16 @@ sudo systemctl reload sshd
 ### Host key changed error
 
 ```bash
-# Remove old host key
+# Remove old host key and let the container re-scan on next start
 rm .ssh/known_hosts
-# Restart container to re-seed known_hosts
 docker compose restart openclaw
 ```
+
+> **Note:** After removing `known_hosts`, the container will run `ssh-keyscan` on startup because the file is empty. If you want to avoid the MITM risk, pre-seed manually before restarting:
+> ```bash
+> ssh-keyscan -H <hostname> >> .ssh/known_hosts
+> docker compose restart openclaw
+> ```
 
 ### SSH command not found in chroot
 

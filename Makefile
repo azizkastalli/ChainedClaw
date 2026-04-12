@@ -1,20 +1,25 @@
 # OpenClaw Makefile
-# Simplified interface for installation, container management, and cleanup
+# Simplified interface for container management and cleanup
 #
 # Usage:
-#   make install          - Full installation
 #   make uninstall        - Full uninstallation
 #   make help             - Show all available targets
 #
-# Host-specific targets (require HOST parameter):
-#   make chroot HOST=name       - Set up chroot for a host
+# Local host targets (require HOST parameter):
+#   make chroot HOST=name       - Set up chroot for a local host
+#   make chroot-clean HOST=name - Tear down chroot for a local host
 #   make key-add HOST=name      - Install SSH key to host chroot
 #   make key-remove HOST=name   - Remove SSH key from host chroot
 #   make sync HOST=name         - Re-sync SSH key (alias for key-add)
 #   make test HOST=name         - Test SSH connection to host
+#
+# Remote host targets (require HOST, REMOTE_KEY; hostname/port from config.json):
+#   make remote-setup HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
+#   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
-.PHONY: help install uninstall config keys auth up down restart logs status \
-        chroot chroot-clean key-add key-remove sync firewall firewall-flush test clean purge
+.PHONY: help uninstall config keys auth up down restart logs status \
+        chroot chroot-clean key-add key-remove sync firewall firewall-flush \
+        remote-setup remote-clean test clean purge
 
 # Default target
 .DEFAULT_GOAL := help
@@ -43,19 +48,24 @@ help: ## Show this help message
 	@echo "  sync              Re-sync SSH key to HOST (alias for key-add)"
 	@echo "  test              Test SSH connection to HOST"
 	@echo ""
+	@echo "Remote host targets (hostname/port read from config.json):"
+	@echo "  remote-setup      Copy files and set up chroot on a remote host"
+	@echo "  remote-clean      Tear down chroot on a remote host and clean up"
+	@echo ""
 	@echo "Examples:"
-	@echo "  make install                    # Full installation"
-	@echo "  make chroot HOST=my-host        # Set up chroot for my-host"
+	@echo "  make keys                       # Generate SSH keys"
+	@echo "  make auth                       # Initialize dashboard credentials"
+	@echo "  make up                         # Start containers"
+	@echo "  make chroot HOST=my-host        # Set up chroot for local host"
+	@echo "  make key-add HOST=my-host       # Install SSH key to local chroot"
+	@echo "  make remote-setup HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
+	@echo "  make remote-clean HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
 	@echo "  make test HOST=my-host          # Test SSH to my-host"
 	@echo "  make logs                       # Show container logs"
 
 # ------------------------------------------------------------------------------
 # Installation
 # ------------------------------------------------------------------------------
-
-install: ## Full installation (containers, keys, chroot)
-	@echo "=== Installing OpenClaw ==="
-	sudo bash $(SCRIPTS_DIR)/install.sh
 
 uninstall: ## Full uninstallation (keeps images, config)
 	@echo "=== Uninstalling OpenClaw ==="
@@ -115,34 +125,63 @@ endif
 	sudo bash $(SCRIPTS_DIR)/chroot_jail/jail_break.sh $(HOST)
 	@echo "Reloading sshd..."
 	sudo systemctl reload sshd
+	@echo ""
+	@echo "NOTE: If you re-create the chroot, re-install the SSH key:"
+	@echo "  make chroot HOST=$(HOST) && make key-add HOST=$(HOST)"
 
 # ------------------------------------------------------------------------------
 # Maintenance
 # ------------------------------------------------------------------------------
 
-key-add: ## Install SSH key to HOST chroot
+key-add: ## Install SSH key to HOST (mode-aware: chroot or restricted_key)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make key-add HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh
-	sudo systemctl reload sshd
+	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
+	sudo systemctl reload sshd 2>/dev/null || true
 
-key-remove: ## Remove SSH key from HOST chroot
+key-remove: ## Remove SSH key from HOST (mode-aware: chroot or restricted_key)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make key-remove HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh
-	sudo systemctl reload sshd
+	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh $(HOST)
+	sudo systemctl reload sshd 2>/dev/null || true
 
 sync: ## Re-sync SSH key to HOST (alias for key-add)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make sync HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh
-	sudo systemctl reload sshd
+	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
+	sudo systemctl reload sshd 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# Remote Host Management (requires HOST, REMOTE_IP, REMOTE_KEY parameters)
+# ------------------------------------------------------------------------------
+
+remote-setup: ## Set up chroot on a remote host (usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key)
+ifndef HOST
+	@echo "Error: HOST required. Usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+ifndef REMOTE_KEY
+	@echo "Error: REMOTE_KEY required. Usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+	bash $(SCRIPTS_DIR)/remote/setup.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
+
+remote-clean: ## Tear down chroot on a remote host (usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key)
+ifndef HOST
+	@echo "Error: HOST required. Usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+ifndef REMOTE_KEY
+	@echo "Error: REMOTE_KEY required. Usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
 
 firewall: ## Set up firewall rules
 	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh

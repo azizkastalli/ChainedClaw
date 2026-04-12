@@ -85,29 +85,37 @@ HOST_NAME="$1"
 # Function to get project_paths from config.json for a given host
 get_project_paths() {
     local host="$1"
-    # Use /usr/bin/python3 explicitly to ensure it works with 
-    /usr/bin/python3 -c "
-import json
-import sys
-
-try:
-    with open('$CONFIG_JSON', 'r') as f:
-        config = json.load(f)
-    
-    if 'ssh_hosts' in config:
-        for h in config['ssh_hosts']:
-            if h.get('name') == '$host':
-                paths = h.get('project_paths', [])
-                if paths:
-                    for p in paths:
-                        print(p)
-                    sys.exit(0)
-    print('')
-except Exception as e:
-    print('', file=sys.stderr)
-    sys.exit(1)
-"
+    if ! command -v jq &>/dev/null; then
+        log_error "jq is required but not installed. Install with: apt install jq"
+        exit 1
+    fi
+    # Use --arg to pass host name safely — no shell injection possible
+    jq -r --arg name "$host" \
+        '.ssh_hosts[] | select(.name == $name) | .project_paths[]' \
+        "$CONFIG_JSON" 2>/dev/null
 }
+
+# Read isolation mode (default: chroot)
+ISOLATION=$(jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
+    "$CONFIG_JSON" 2>/dev/null)
+[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="chroot"
+
+# restricted_key mode: just create the user and exit — no chroot needed
+if [ "$ISOLATION" = "restricted_key" ]; then
+    echo "=== Isolation mode: restricted_key (no chroot) ==="
+    echo "  User: $AGENT_USER"
+    if id "$AGENT_USER" &>/dev/null; then
+        log_info "User $AGENT_USER already exists"
+    else
+        useradd -m -s /bin/bash "$AGENT_USER"
+        log_info "User $AGENT_USER created"
+    fi
+    echo ""
+    log_info "User ready. Install the SSH key with restrictions:"
+    log_info "  make key-add HOST=$HOST_NAME"
+    exit 0
+fi
 
 # Get project paths for this host
 PROJECT_PATHS=$(get_project_paths "$HOST_NAME")
@@ -126,7 +134,28 @@ echo "$PROJECT_PATHS" | while read -r path; do
     [ -n "$path" ] && echo "    - $path"
 done
 
-# Helper function to safely mount - checks if already mounted first
+# Try bind mount, then remount read-only if requested.
+# Returns 0 on success, 1 on failure.
+_try_bind_mount() {
+    local source="$1" target="$2" ro="$3"
+    if mountpoint -q "$target" 2>/dev/null || mount | grep -q "on $target "; then
+        echo "  Already mounted: $target"
+        return 0
+    fi
+    if mount --bind "$source" "$target" 2>/dev/null; then
+        if [ "$ro" = "ro" ]; then
+            mount -o remount,ro "$target" 2>/dev/null || true
+            echo "  Mounted: $source -> $target (ro)"
+        else
+            echo "  Mounted: $source -> $target (rw)"
+        fi
+        return 0
+    fi
+    return 1
+}
+
+# Mount a system directory (bin, lib, etc.) — falls back to copying with a
+# progress bar when bind mount is not permitted (unprivileged Docker).
 do_mount() {
     local source="$1"
     local target="$2"
@@ -134,21 +163,67 @@ do_mount() {
 
     mkdir -p "$target"
 
-    # Check if already mounted using mountpoint AND mount | grep
-    # This is more reliable than just mountpoint -q alone
-    if mountpoint -q "$target" 2>/dev/null || mount | grep -q "on $target "; then
-        echo "  Already mounted: $target"
+    if _try_bind_mount "$source" "$target" "$ro"; then
         return 0
     fi
 
-    mount --bind "$source" "$target"
-
+    # Bind mount failed — fall back to copying (system dirs only; acceptable cost).
+    log_warn "  Bind mount not permitted for $target — copying instead (unprivileged container?)"
+    local total copied=0 pct filled empty bar
+    total=$(find "$source" -mindepth 1 -maxdepth 3 | wc -l)
+    [ "$total" -eq 0 ] && total=1
+    printf "  Copying %-30s [%-20s] %3d%%" "$(basename "$source")" "" 0
+    while IFS= read -r -d '' f; do
+        rel="${f#"$source"/}"
+        dest="$target/$rel"
+        if [ -d "$f" ]; then
+            mkdir -p "$dest"
+        else
+            mkdir -p "$(dirname "$dest")"
+            cp -a "$f" "$dest" 2>/dev/null || true
+        fi
+        copied=$(( copied + 1 ))
+        pct=$(( copied * 100 / total ))
+        filled=$(( pct / 5 ))
+        empty=$(( 20 - filled ))
+        bar="$(printf '%0.s#' $(seq 1 $filled 2>/dev/null))$(printf '%0.s.' $(seq 1 $empty 2>/dev/null))"
+        printf "\r  Copying %-30s [%-20s] %3d%%" "$(basename "$source")" "$bar" "$pct"
+    done < <(find "$source" -mindepth 1 -maxdepth 3 -print0)
+    printf "\r  Copied  %-30s [####################] 100%%\n" "$(basename "$source")"
     if [ "$ro" = "ro" ]; then
-        mount -o remount,ro "$target"
-        echo "  Mounted: $source -> $target (ro)"
-    else
-        echo "  Mounted: $source -> $target (rw)"
+        chmod -R a-w "$target" 2>/dev/null || true
     fi
+}
+
+# Mount a project directory — bind mount ONLY, no copy fallback.
+# Copying project dirs (which may contain multi-GB model weights) would fill
+# the disk. If bind mount fails the host needs CAP_SYS_ADMIN / --privileged.
+do_mount_project() {
+    local source="$1"
+    local target="$2"
+
+    mkdir -p "$target"
+
+    if _try_bind_mount "$source" "$target" "rw"; then
+        return 0
+    fi
+
+    log_error "============================================"
+    log_error "BIND MOUNT REQUIRED for project directory"
+    log_error "============================================"
+    log_error "  Cannot bind-mount: $source -> $target"
+    log_error ""
+    log_error "  Project directories are never copied — they may contain"
+    log_error "  large model weights that would fill the disk."
+    log_error ""
+    log_error "  This host does not have CAP_SYS_ADMIN (typical of"
+    log_error "  unprivileged Docker containers such as RunPod)."
+    log_error ""
+    log_error "  To fix on RunPod: re-create the pod with 'Privileged mode'"
+    log_error "  enabled in the pod settings, then re-run:"
+    log_error "    make remote-setup HOST=$HOST_NAME REMOTE_KEY=<key> REMOTE_USER=<user>"
+    log_error "============================================"
+    exit 1
 }
 
 # 1. Create chroot directory structure
@@ -315,7 +390,7 @@ while IFS= read -r project_path; do
     project_name=$(basename "$project_path")
     target_dir="$CHROOT_BASE/home/$AGENT_USER/$project_name"
     
-    do_mount "$project_path" "$target_dir" "rw"
+    do_mount_project "$project_path" "$target_dir"
 done <<< "$PROJECT_PATHS"
 
 # 5. Create required /dev entries and mount virtual filesystems

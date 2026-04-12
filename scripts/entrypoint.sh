@@ -105,25 +105,29 @@ fi
 log_info "SSH config generated"
 
 # 5. Pre-seed known_hosts for configured hosts
-echo ""
-log_warn "=============================================="
-log_warn "SECURITY WARNING: Host Key Pinning"
-log_warn "=============================================="
-log_warn "Host keys will be fetched via ssh-keyscan."
-log_warn "This is vulnerable to MITM on first connection."
-log_warn ""
-log_warn "For high-security environments, pre-seed manually:"
-log_warn "  ssh-keyscan -H <hostname> >> .ssh/known_hosts"
-log_warn "=============================================="
-echo ""
-
 log_info "Pre-seeding known_hosts..."
 KNOWN_HOSTS="$SSH_DIR/known_hosts"
 
-# Check if known_hosts is mounted from host
+# Decide whether to run ssh-keyscan:
+#   - Skip if known_hosts is read-only (operator pre-seeded it via host mount)
+#   - Skip if known_hosts already has entries (avoid overwriting trusted keys)
+#   - Scan only when known_hosts is writable AND empty (first boot, no keys yet)
+_should_scan=true
 if [ -f "$KNOWN_HOSTS" ] && [ ! -w "$KNOWN_HOSTS" ]; then
-    log_info "known_hosts is read-only mount, skipping ssh-keyscan"
-else
+    log_info "known_hosts is read-only (host-managed), skipping ssh-keyscan"
+    _should_scan=false
+elif [ -f "$KNOWN_HOSTS" ] && [ -s "$KNOWN_HOSTS" ]; then
+    log_info "known_hosts already has entries, skipping ssh-keyscan"
+    _should_scan=false
+fi
+
+if [ "$_should_scan" = true ]; then
+    log_warn "=============================================="
+    log_warn "SECURITY: Running ssh-keyscan (MITM risk)"
+    log_warn "For trusted environments, pre-seed known_hosts"
+    log_warn "on the host before starting the container:"
+    log_warn "  ssh-keyscan -H <hostname> >> .ssh/known_hosts"
+    log_warn "=============================================="
     python3 << 'PYTHON_EOF2' || log_warn "known_hosts pre-seed incomplete (host may be unreachable)"
 import json, os, subprocess, sys
 
@@ -137,16 +141,15 @@ try:
     with open(known_hosts, 'a') as kh:
         for host in config.get('ssh_hosts', []):
             hostname = host.get('hostname', '')
+            port = str(host.get('port', 22))
             if hostname:
-                result = subprocess.run(
-                    ['ssh-keyscan', '-T', '5', hostname],
-                    capture_output=True, text=True, timeout=10
-                )
+                cmd = ['ssh-keyscan', '-T', '5', '-p', port, hostname]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 if result.stdout.strip():
                     kh.write(result.stdout)
-                    print(f"  Pinned host key for {hostname}")
+                    print(f"  Pinned host key for {hostname}:{port}")
                 else:
-                    print(f"  Warning: Could not scan {hostname}", file=sys.stderr)
+                    print(f"  Warning: Could not scan {hostname}:{port}", file=sys.stderr)
 except Exception as e:
     print(f"  Warning: known_hosts pre-seed failed: {e}", file=sys.stderr)
 PYTHON_EOF2

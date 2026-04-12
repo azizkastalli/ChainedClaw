@@ -1,13 +1,25 @@
 {
   "ssh_hosts": [
     {
-      "name": "example-host",
+      "name": "my-server",
       "hostname": "192.168.1.100",
       "port": 22,
-      "user": "your-username",
+      "user": "openclaw-bot",
       "strict_host_key_checking": true,
+      "isolation": "chroot",
       "project_paths": [
         "/path/to/your/project"
+      ]
+    },
+    {
+      "name": "my-runpod",
+      "hostname": "104.21.0.1",
+      "port": 22022,
+      "user": "openclaw-bot",
+      "strict_host_key_checking": true,
+      "isolation": "restricted_key",
+      "project_paths": [
+        "/workspace/my_project"
       ]
     }
   ]

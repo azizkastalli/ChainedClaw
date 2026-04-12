@@ -12,7 +12,7 @@ the [Hardening Roadmap](#hardening-roadmap) section.
 2. **Host-Level Firewall** — Egress filtering on FORWARD chain, scoped to container IP, persistent by default
 3. **Chroot Isolation** — Agent users are jailed in isolated directories on SSH hosts
 4. **SSH Key-Only Auth** — Ed25519 keys generated on host, mounted read-only into container
-5. **Host Key Pinning** — `known_hosts` pre-seeded at startup, `StrictHostKeyChecking yes`
+5. **Host Key Pinning** — `known_hosts` pre-seeded on first boot (empty file only), `StrictHostKeyChecking yes`
 6. **Dashboard Authentication** — Nginx basic auth, localhost binding only
 7. **Static IP Assignment** — Container IPs are static, validated by firewall
 
@@ -39,11 +39,10 @@ The OpenClaw container runs as **non-root user (UID 1000)** with significant res
 - `/config.json` — SSH host configuration
 - `/entrypoint.sh` — Container startup script
 
-All other filesystem paths are read-only. An attacker who compromises the
-container cannot modify gateway binaries, system libraries, or plant persistence.
 
 **Environment variables:**
 - `NPM_CONFIG_CACHE=/home/openclaw/.openclaw/npm-cache` — Isolated npm cache directory
+- `OPENCLAW_GATEWAY_BIND=172.28.0.10` — Gateway binds to the container's static IP only, not `0.0.0.0`; prevents other containers on the same Docker network from bypassing nginx
 
 ### Network Topology
 
@@ -77,6 +76,8 @@ OpenClaw container's static IP.
 - **Only affects OpenClaw container** — Other containers and host services are NOT affected
 - **Static IP validation** — Firewall validates container IP matches expected value
 - **Persistent by default** — Rules survive reboots (use `--no-persist` to disable)
+
+**Hostname resolution:** Entries in `config.json` may be IP addresses or hostnames. The firewall script resolves hostnames to IPs via `getent hosts` before applying rules, and skips any entry that cannot be resolved (with a warning). Invalid IPs (e.g. octets > 255) are also rejected before reaching `iptables`.
 
 **Note:** In default mode, non-SSH traffic (HTTP, DNS, etc.) is not filtered.
 Use `--block-all` mode to restrict all outbound traffic. See
@@ -142,9 +143,10 @@ sudo bash scripts/ssh_key/init_keys.sh
 
 The web dashboard is protected by HTTP Basic Authentication:
 
-- **Nginx basic auth** — Username/password required
+- **Nginx basic auth** — Username/password required for all routes (`auth_basic` set at server level in `nginx/nginx.conf`)
 - **Localhost binding only** — `127.0.0.1:8090`, no external access
-- **Health endpoint exempt** — `/health` accessible without auth
+- **Health endpoint exempt** — `/health` uses `auth_basic off` so monitoring tools are not blocked
+- **Credentials file** — `.htpasswd` stored at `/etc/nginx/.htpasswd` (mounted into nginx container), permissions `640` (readable by `root:www-data` only)
 
 **Setup:**
 ```bash
@@ -305,19 +307,15 @@ If the OpenClaw container is compromised:
 | Modify gateway binary | Cannot — read-only filesystem | ✅ `read_only: true` |
 | Plant persistence | Cannot — no writable system paths | ✅ `read_only: true` + `cap_drop` |
 | Escalate to host | Cannot — no capabilities + non-root | ✅ `cap_drop: ALL` + `no-new-privileges` + UID 1000 |
-| Access nginx directly | Possible — same network | ⚠️ Not segmented |
+| Access nginx directly | Reduced — gateway binds to static IP, not 0.0.0.0 | ⚠️ No full DMZ segmentation |
 | Exfiltrate via HTTP/HTTPS | Possible in default firewall mode | ⚠️ Use `--block-all` |
 | Access dashboard | Requires auth + localhost | ✅ Basic auth + 127.0.0.1 binding |
 | SSH from chroot to other hosts | Cannot — SSH binaries excluded | ✅ Symlink exclusion |
 
 ### Residual Risks
 
-1. **No network segmentation** — Nginx and OpenClaw share the same Docker network. A
-   compromise of either container allows direct access to the other.
-2. **ssh-keyscan at startup** — First-run host key pinning happens via
-   `ssh-keyscan`, which is vulnerable to MITM on the local network. Keys are
-   pinned after first scan and verified on subsequent connections.
-   **Mitigation:** Pre-seed `known_hosts` manually for high-security environments.
+1. **Partial network segmentation** — Nginx and OpenClaw share the same Docker network. The gateway now binds to its static IP (`172.28.0.10`) rather than `0.0.0.0`, so other containers cannot reach it directly without knowing the IP. Full DMZ separation is not implemented.
+2. **ssh-keyscan on first boot** — When `known_hosts` is empty, the entrypoint runs `ssh-keyscan` to pin host keys. This is vulnerable to MITM on the local network. On subsequent starts the scan is skipped (file has entries). **Mitigation:** Pre-seed `known_hosts` on the host before the first container start (`ssh-keyscan -H <hostname> >> .ssh/known_hosts`); the container will detect the non-empty file and skip the scan entirely.
 3. **Non-SSH egress not blocked by default** — HTTP/HTTPS/DNS traffic is allowed.
    Use `--block-all` for strict egress control.
 
@@ -330,7 +328,7 @@ security:
 
 | Item | Effort | Benefit | Notes |
 |------|--------|---------|-------|
-| DMZ network segmentation | Medium | Medium | Separate nginx (dmz) from openclaw (internal) |
+| DMZ network segmentation | Medium | Medium | Gateway binds to static IP (not 0.0.0.0); full DMZ still not implemented |
 | HTTPS for dashboard | Low | Low (dev) | Self-signed certs; only useful if accessed remotely |
 | SSH binary blocking in chroot | Done | High | ✅ Implemented — symlink exclusion approach |
 | IPv6 firewall rules | Done | Low | ✅ Implemented — IPv6 disabled in Docker network |

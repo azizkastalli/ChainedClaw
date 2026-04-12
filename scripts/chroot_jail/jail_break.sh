@@ -38,31 +38,41 @@ if [ -z "${1:-}" ]; then
 fi
 HOST_NAME="$1"
 
+# Read isolation mode (default: chroot)
+ISOLATION=$(jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
+    "$CONFIG_JSON" 2>/dev/null)
+[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="chroot"
+
+# restricted_key mode: remove user + key only, no chroot teardown needed
+if [ "$ISOLATION" = "restricted_key" ]; then
+    echo "=== Teardown: restricted_key mode for host: $HOST_NAME ==="
+    echo "[1/2] Removing user $AGENT_USER..."
+    pkill -u "$AGENT_USER" 2>/dev/null || true
+    if id "$AGENT_USER" &>/dev/null; then
+        userdel -r "$AGENT_USER" 2>/dev/null || true
+        log_info "User $AGENT_USER removed"
+    else
+        log_info "User $AGENT_USER does not exist"
+    fi
+    echo "[2/2] Removing authorized_keys..."
+    rm -f "/home/$AGENT_USER/.ssh/authorized_keys" 2>/dev/null || true
+    echo ""
+    echo "=== Teardown complete (restricted_key mode) ==="
+    exit 0
+fi
+
 # Function to get project_paths from config.json for a given host
 get_project_paths() {
     local host="$1"
-    # Use /usr/bin/python3 explicitly to ensure it works with 
-    /usr/bin/python3 -c "
-import json
-import sys
-
-try:
-    with open('$CONFIG_JSON', 'r') as f:
-        config = json.load(f)
-    
-    if 'ssh_hosts' in config:
-        for h in config['ssh_hosts']:
-            if h.get('name') == '$host':
-                paths = h.get('project_paths', [])
-                if paths:
-                    for p in paths:
-                        print(p)
-                    sys.exit(0)
-    print('')
-except Exception as e:
-    print('', file=sys.stderr)
-    sys.exit(1)
-"
+    if ! command -v jq &>/dev/null; then
+        log_error "jq is required but not installed. Install with: apt install jq"
+        exit 1
+    fi
+    # Use --arg to pass host name safely — no shell injection possible
+    jq -r --arg name "$host" \
+        '.ssh_hosts[] | select(.name == $name) | .project_paths[]' \
+        "$CONFIG_JSON" 2>/dev/null
 }
 
 # Get project paths for this host

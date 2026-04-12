@@ -14,7 +14,7 @@ services:
     environment:
       - APP_HOME=/home/openclaw
       - HOME=/home/openclaw
-      - OPENCLAW_GATEWAY_BIND=0.0.0.0
+      - OPENCLAW_GATEWAY_BIND=172.28.0.10
       - NPM_CONFIG_CACHE=/home/openclaw/.openclaw/npm-cache
     volumes:
       - type: bind

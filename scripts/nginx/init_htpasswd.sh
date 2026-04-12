@@ -28,7 +28,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    log_error "This script must be run as root (use )"
+    log_error "This script must be run as root (use sudo)"
     exit 1
 fi
 
@@ -68,9 +68,9 @@ fi
 DASHBOARD_USER="${DASHBOARD_USER:-openclaw}"
 echo "$DASHBOARD_PASSWORD" | htpasswd -i -c "$HTPASSWD_FILE" "$DASHBOARD_USER"
 
-# Set permissions
-chown root:root "$HTPASSWD_FILE"
-chmod 644 "$HTPASSWD_FILE"
+# Set permissions — readable only by root and nginx (www-data)
+chown root:www-data "$HTPASSWD_FILE" 2>/dev/null || chown root:root "$HTPASSWD_FILE"
+chmod 640 "$HTPASSWD_FILE"
 
 echo ""
 log_info "htpasswd file created: $HTPASSWD_FILE"

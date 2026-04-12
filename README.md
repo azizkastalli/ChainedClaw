@@ -34,11 +34,23 @@ Edit `config.json` with your SSH host details:
       "hostname": "172.23.0.1",
       "user": "openclaw-bot",
       "strict_host_key_checking": true,
+      "isolation": "chroot",
       "project_paths": ["/path/to/your/project"]
     }
   ]
 }
 ```
+
+#### Isolation modes
+
+Each host has an `isolation` field that controls how the agent is sandboxed:
+
+| Mode | When to use | How it works |
+|------|-------------|--------------|
+| `chroot` (default) | Bare-metal servers, VMs | Full chroot jail — strongest isolation |
+| `restricted_key` | RunPod, Docker containers | SSH key restrictions only — no chroot needed |
+
+Use `restricted_key` when the remote host is already an isolated Docker/RunPod container and bind mounts are not available (`CAP_SYS_ADMIN` not granted). The key is installed with `restrict,pty` which blocks port forwarding, agent forwarding, and X11, while still allowing the agent to run commands.
 
 > **Tip:** When connecting from a Docker container to its host machine, use the Docker default gateway IP (typically `172.17.0.1` or check with `ip route | grep default` inside the container).
 
@@ -47,89 +59,184 @@ Edit `config.json` with your SSH host details:
 ### 2. Initialize SSH Keys (on host)
 
 ```bash
-bash scripts/ssh_key/init_keys.sh
+make keys
 ```
 
 This generates Ed25519 keys in `.ssh/` directory on the host.
 
+> **Note:** If the container is already running when you run `make keys`, restart it (`make down && make up`) so the entrypoint regenerates the SSH config with the new keys. Then run `make key-add HOST=<host>` for each configured host.
+
+#### Pre-seed known_hosts (recommended for remote hosts)
+
+On first boot the container runs `ssh-keyscan` to pin host keys. For **remote hosts** (RunPod, external servers) pre-seeding before starting the container eliminates the MITM risk of a blind scan:
+
+```bash
+# Standard port
+ssh-keyscan -H <remote-ip> >> .ssh/known_hosts
+
+# Non-standard port (e.g. RunPod)
+ssh-keyscan -H -p <port> <remote-ip> >> .ssh/known_hosts
+```
+
+Do this before `make up`. If the container is already running, add the entry then restart:
+```bash
+make down && make up
+```
+
+> **Local host (`172.28.0.1`):** this IP is the Docker bridge gateway and only exists after `make up` creates the network — you cannot scan it beforehand. The blind scan on first boot is acceptable here since you are scanning your own machine over a local Docker bridge (not a public network). The key is cached after the first boot and subsequent starts skip the scan entirely.
+
 ### 3. Initialize Dashboard Auth (on host)
 
 ```bash
-sudo bash scripts/nginx/init_htpasswd.sh
+make auth
 ```
 
 ### 4. Start Services
 
 ```bash
-docker compose up -d
+make up
 ```
 
 This starts:
 - **openclaw** — AI agent gateway (SSH keys mounted read-only from host)
 - **openclaw-nginx** — Reverse proxy on port `$NGINX_HTTP_PORT`
 
-### 5. Set Up Chroot on Target Hosts
+> **Important — order matters:** The remote host and localhost must be in `config.json` before any other step. Two things depend on it:
+> - `jail_set.sh` reads `project_paths` from `config.json` and exits with an error if the host entry is missing.
+> - The firewall whitelists only IPs listed in `config.json`. Without re-running `make firewall` after adding the host, the container's SSH connection to that IP will be dropped by the firewall even if the chroot is correctly set up.
+> - Run the firewall only on the openclaw container host not the remote servers.
 
-The chroot setup script must run **on the target host itself** (not remotely from the OpenClaw host).
-
-#### Local Host (Same Machine)
-
-If the target host is the same machine running OpenClaw:
+### 5. Set Up Firewall (on host)
 
 ```bash
-bash scripts/chroot_jail/jail_set.sh my-host
-sudo systemctl reload sshd
+make firewall
 ```
 
-#### Remote Host (Different Machine)
+This installs persistent iptables rules that restrict the container's SSH egress to only the hosts listed in `config.json`. Rules survive reboots by default.
 
-For remote machines, you need to:
+> **Stricter mode** (blocks all non-SSH outbound traffic too):
+> ```bash
+> sudo bash scripts/firewall/setup_firewall.sh --block-all
+> ```
 
-1. **Get the SSH public key** from the OpenClaw host:
-   ```bash
-   # On OpenClaw host
-   cat .ssh/id_openclaw.pub
-   ```
 
-2. **Copy scripts to the remote host**:
-   ```bash
-   # On OpenClaw host
-   scp -r scripts/ user@remote-host:/tmp/openclaw-scripts/
-   ```
+### 6. Set Up Target Hosts
 
-3. **Run setup on the remote host**:
-   ```bash
-   # SSH to remote host
-   ssh user@remote-host
-   
-   # On the remote host, run the setup
-   cd /tmp/openclaw-scripts
-   sudo bash scripts/chroot_jail/jail_set.sh my-host
-   sudo systemctl reload sshd
-   
-   # Clean up
-   rm -rf /tmp/openclaw-scripts
-   ```
+The isolation mode in `config.json` controls what gets set up. Both modes are handled by the same `make` commands.
 
-4. **Verify the connection** from OpenClaw host:
-   ```bash
-   docker exec -it openclaw ssh my-host whoami
-   # Expected: openclaw-bot
-   ```
-
-> **Note:** The `hostname` in `config.json` should be the remote host's IP address or hostname that the OpenClaw container can reach.
-
-### 6. Verify
+#### Local Host (Container Host Machine)
 
 ```bash
-docker exec -it openclaw ssh my-host whoami
-# Expected: openclaw-bot
+make chroot HOST=my-host    # sets up chroot jail OR creates user (restricted_key)
+make key-add HOST=my-host   # installs key with correct restrictions for the mode
+```
+
+#### Test Local Setup (Container Host Machine)
+```bash
+make test HOST=my-host    # channge my-host by your config host name
+```
+
+#### Remote Host — `chroot` mode (bare metal / VM)
+
+Use this for servers where you have full sudo access and bind mounts work.
+
+Set `"isolation": "chroot"` in `config.json`, then:
+
+1. **Add the host to `config.json`**:
+   ```json
+   {
+     "name": "my-server",
+     "hostname": "<remote-ip>",
+     "user": "openclaw-bot",
+     "strict_host_key_checking": true,
+     "isolation": "chroot",
+     "project_paths": ["/path/to/project"]
+   }
+   ```
+
+2. **Pre-seed the host key** (avoids blind ssh-keyscan on container start):
+   ```bash
+   ssh-keyscan -H <remote-ip> >> .ssh/known_hosts
+   ```
+
+3. **Re-apply the firewall**:
+   ```bash
+   make firewall
+   ```
+
+4. **Run remote setup**:
+   ```bash
+   make remote-setup HOST=my-server REMOTE_KEY=/path/to/ssh/key [REMOTE_USER=ubuntu]
+   ```
+   This copies scripts, runs `jail_set.sh` (chroot), installs the key, and reloads sshd.
+
+5. **Verify**:
+   ```bash
+   make test HOST=my-server
+   ```
+
+#### Test Remote Setup (Container Host Machine)
+```bash
+make restart
+make test HOST=remote-host    # channge remote-host by your config remote server host name
+```
+
+#### Remote Host — `restricted_key` mode (RunPod / Docker containers)
+
+Use this when the remote host is already an isolated Docker or RunPod container where bind mounts are not available (`CAP_SYS_ADMIN` not granted). No chroot is created — instead the SSH key is installed with `restrict,pty` which blocks port forwarding, agent forwarding, and X11.
+
+Set `"isolation": "restricted_key"` in `config.json`, then:
+
+1. **Add the host to `config.json`**:
+   ```json
+   {
+     "name": "my-runpod",
+     "hostname": "<pod-ip>",
+     "port": 15775,
+     "user": "openclaw-bot",
+     "strict_host_key_checking": true,
+     "isolation": "restricted_key",
+     "project_paths": ["/workspace/my_project"]
+   }
+   ```
+
+2. **Pre-seed the host key** (required for non-standard ports):
+   ```bash
+   ssh-keyscan -H -p 15775 <pod-ip> >> .ssh/known_hosts
+   ```
+
+3. **Re-apply the firewall**:
+   ```bash
+   make firewall
+   ```
+
+4. **Run remote setup**:
+   ```bash
+   make remote-setup HOST=my-runpod REMOTE_KEY=/path/to/ssh/key REMOTE_USER=root
+   ```
+   This creates the `openclaw-bot` user and installs the restricted key. No sshd reload is needed.
+
+5. **Verify**:
+   ```bash
+   make test HOST=my-runpod
+   ```
+
+To remove a remote host setup:
+```bash
+make remote-clean HOST=my-host REMOTE_KEY=/path/to/ssh/key [REMOTE_USER=user]
+```
+
+### 7. Verify
+
+```bash
+make test HOST=my-host
+# Expected output: openclaw-bot
 
 docker exec -it openclaw ssh my-host ls
 # Expected: your project files
 ```
 
-Open the dashboard at `http://localhost:8090`.
+Open the dashboard at `http://localhost:8090` (credentials from step 3).
 
 ---
 
@@ -137,15 +244,30 @@ Open the dashboard at `http://localhost:8090`.
 
 | Command | Description |
 |---------|-------------|
-| `sudo bash scripts/ssh_key/init_keys.sh` | Generate SSH keys on host |
-| `sudo bash scripts/chroot_jail/jail_set.sh <host>` | Set up chroot jail, user, SSH keys, sshd config |
-| `sudo bash scripts/chroot_jail/jail_break.sh <host>` | Tear down everything (chroot, user, sshd config) |
-| `sudo bash scripts/ssh_key/add.sh <host>` | Re-sync SSH key after container restart |
-| `sudo systemctl reload sshd` | Apply sshd config changes |
+| `make keys` | Generate SSH keys on host |
+| `make auth` | Initialize dashboard credentials |
+| `make up` / `make down` | Start / stop containers |
+| `make firewall` | Install persistent egress firewall rules |
+| `make firewall-flush` | Remove firewall rules |
+| `make chroot HOST=<host>` | Set up chroot jail on local host |
+| `make remote-setup HOST=<host> REMOTE_KEY=<key>` | Set up chroot on a remote host (hostname/port from config.json) |
+| `make remote-clean HOST=<host> REMOTE_KEY=<key>` | Tear down chroot on a remote host |
+| `make key-add HOST=<host>` | Install SSH key into chroot and reload sshd |
+| `make chroot-clean HOST=<host>` | Tear down chroot, user, sshd config |
+| `make sync HOST=<host>` | Re-sync SSH key (alias for `key-add`) |
+| `make test HOST=<host>` | Test SSH connection |
+| `make uninstall` | Full uninstallation |
 
-> After any container recreate (`docker compose down && up`), re-sync the key:
+> **After `make chroot-clean`**, the chroot and its authorized key are gone. To restore access:
 > ```bash
-> sudo bash scripts/ssh_key/add.sh my-host && sudo systemctl reload sshd
+> make chroot HOST=my-host
+> make key-add HOST=my-host
+> ```
+
+> **After any container recreate** (`make down && make up`), install or re-sync the key:
+> ```bash
+> make key-add HOST=my-host   # first time, or after make keys regenerates keys
+> make sync HOST=my-host      # alias — use either one
 > ```
 
 ## Architecture
@@ -169,7 +291,7 @@ Open the dashboard at `http://localhost:8090`.
 
 **Security features:**
 - Ed25519 key authentication (no passwords)
-- Host key pinned via `known_hosts` at startup
+- Host key pinning via `known_hosts` (scanned on first boot only; skipped when pre-seeded or entries already present)
 - Chroot jail isolates agent from host filesystem
 - SSH binaries removed from chroot (cannot jump to other hosts)
 - `/proc` and `/sys` mounted read-only
@@ -177,6 +299,8 @@ Open the dashboard at `http://localhost:8090`.
 - Container runs as non-root user (UID 1000)
 - Read-only root filesystem with `cap_drop: ALL`
 - SSH keys generated on host, mounted read-only into container
+- Dashboard protected by Nginx basic auth (credentials via `init_htpasswd.sh`)
+- Gateway binds only to its static container IP (`172.28.0.10`), not `0.0.0.0`
 
 ## File Structure
 
@@ -196,6 +320,9 @@ scripts/
   chroot_jail/
     jail_set.sh         # Host-side chroot + SSH setup
     jail_break.sh       # Host-side teardown
+  remote/
+    setup.sh            # Automated remote chroot setup (copies files + runs jail_set + add)
+    teardown.sh         # Automated remote chroot teardown (runs jail_break + cleanup)
   firewall/
     setup_firewall.sh   # Host firewall management
   nginx/

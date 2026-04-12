@@ -78,7 +78,7 @@ EXPECTED_OPENCLAW_IP="${EXPECTED_OPENCLAW_IP:-172.28.0.10}"
 # Check if running as root (skip for --help)
 if [ "$SHOW_HELP" = false ]; then
     if [ "$EUID" -ne 0 ]; then
-        log_error "This script must be run as root (use )"
+        log_error "This script must be run as root (use sudo)"
         exit 1
     fi
 fi
@@ -124,7 +124,7 @@ done
 install_inotify_tools() {
     if ! command -v inotifywait &> /dev/null; then
         log_info "Installing inotify-tools..."
-        if apt-get update -qq && apt-get install -y -qq inotify-tools > /dev/null 2>&1; then
+        if apt-get update -qq && apt-get install -y -qq inotify-tools; then
             log_info "inotify-tools installed successfully"
         else
             log_error "Failed to install inotify-tools"
@@ -243,7 +243,7 @@ flush_openclaw_rules() {
     # Loop until no more marked rules exist
     while iptables -L FORWARD -n --line-numbers 2>/dev/null | grep -q "$FIREWALL_MARKER"; do
         local line
-        line=$(iptables -L FORWARD -n --line-numbers 2>/dev/null | grep "$FIREWALL_MARKER" | awk '{print $1}' | head -1)
+        line=$(iptables -L FORWARD -n --line-numbers 2>/dev/null | grep "$FIREWALL_MARKER" | head -1 | cut -d' ' -f1)
         if [ -n "$line" ]; then
             iptables -D FORWARD "$line" 2>/dev/null || break
         else
@@ -252,13 +252,55 @@ flush_openclaw_rules() {
     done
 }
 
+# Resolve a hostname or IP string to a validated IPv4 address.
+# Prints the resolved IP on success; prints nothing and returns 1 on failure.
+resolve_to_ip() {
+    local target="$1"
+    local ip
+    # Already an IPv4 address?
+    if [[ "$target" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        # Validate each octet is 0-255
+        local IFS=.
+        read -ra octets <<< "$target"
+        for octet in "${octets[@]}"; do
+            if (( octet > 255 )); then
+                log_warn "  Invalid IP address (octet out of range): $target"
+                return 1
+            fi
+        done
+        echo "$target"
+        return 0
+    fi
+    # Try to resolve hostname
+    ip=$(getent hosts "$target" 2>/dev/null | head -1 | cut -d' ' -f1)
+    if [ -z "$ip" ]; then
+        log_warn "  Cannot resolve hostname to IP: $target (skipping)"
+        return 1
+    fi
+    log_info "  Resolved $target -> $ip"
+    echo "$ip"
+}
+
 # Apply firewall rules
 apply_firewall_rules() {
     log_info "Reading allowed SSH hosts from config.json..."
-    mapfile -t ALLOWED_IPS < <(jq -r '.ssh_hosts[].hostname' "$CONFIG_JSON" 2>/dev/null)
+    mapfile -t RAW_HOSTS < <(jq -r '.ssh_hosts[].hostname' "$CONFIG_JSON" 2>/dev/null)
+
+    if [ ${#RAW_HOSTS[@]} -eq 0 ]; then
+        log_error "No SSH hosts found in config.json"
+        return 1
+    fi
+
+    # Resolve all hostnames/IPs and validate before touching iptables
+    ALLOWED_IPS=()
+    for raw in "${RAW_HOSTS[@]}"; do
+        [ -z "$raw" ] && continue
+        resolved=$(resolve_to_ip "$raw") || continue
+        ALLOWED_IPS+=("$resolved")
+    done
 
     if [ ${#ALLOWED_IPS[@]} -eq 0 ]; then
-        log_error "No SSH hosts found in config.json"
+        log_error "No valid IPs could be resolved from config.json ssh_hosts"
         return 1
     fi
 
@@ -381,8 +423,11 @@ run_watch_mode() {
     # Watch for changes
     while inotifywait -q -e modify,move,create "$CONFIG_JSON" 2>/dev/null; do
         log_info "Detected change in config.json, reloading firewall rules..."
-        apply_firewall_rules
-        log_info "Rules reloaded."
+        if apply_firewall_rules; then
+            log_info "Rules reloaded successfully."
+        else
+            log_error "Rule reload FAILED — previous rules may still be active."
+        fi
     done
 }
 
@@ -393,7 +438,8 @@ show_status() {
     iptables -L FORWARD -n --line-numbers -v | grep "$FIREWALL_MARKER" || echo "  (no rules found)"
     echo ""
     log_info "Active allowed SSH destinations:"
-    iptables -L FORWARD -n | grep "$FIREWALL_MARKER" | grep ACCEPT | awk '{print $NF, "->", $10, "port", $12}' | sort -u || echo "  (none)"
+    iptables -L FORWARD -n | grep "$FIREWALL_MARKER" | grep ACCEPT | \
+        while read -r _ _ _ _ _ _ _ _ _ dst _ dpt _; do echo "$dst -> port $dpt"; done | sort -u || echo "  (none)"
 }
 
 # Main script body
@@ -418,7 +464,7 @@ fi
 if [ "$FLUSH_MODE" = true ]; then
     # Check if running as root for flush
     if [ "$EUID" -ne 0 ]; then
-        log_error "This script must be run as root (use )"
+        log_error "This script must be run as root (use sudo)"
         exit 1
     fi
     flush_openclaw_rules
