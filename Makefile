@@ -83,7 +83,7 @@ keys: ## Initialize SSH keys
 	sudo bash $(SCRIPTS_DIR)/ssh_key/init_keys.sh
 
 auth: ## Initialize dashboard authentication
-	sudo bash $(SCRIPTS_DIR)/nginx/init_htpasswd.sh
+	bash $(SCRIPTS_DIR)/nginx/init_htpasswd.sh
 
 # ------------------------------------------------------------------------------
 # Container Management
@@ -201,9 +201,10 @@ endif
 # Cleanup
 # ------------------------------------------------------------------------------
 
-clean: ## Remove temporary files
+clean: ## Remove generated runtime files (htpasswd, tmp data)
 	rm -rf .openclaw-data/tmp 2>/dev/null || true
-	@echo "Temporary files removed"
+	rm -f nginx/.htpasswd 2>/dev/null || true
+	@echo "Runtime files removed"
 
 purge: ## Full cleanup including config files (WARNING: destructive)
 	@echo "WARNING: This will remove all OpenClaw data including configuration files!"

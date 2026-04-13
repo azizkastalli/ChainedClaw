@@ -156,7 +156,7 @@ Set `"isolation": "chroot"` in `config.json`, then:
 
 2. **Pre-seed the host key** (avoids blind ssh-keyscan on container start):
    ```bash
-   ssh-keyscan -H <remote-ip> >> .ssh/known_hosts
+   ssh-keyscan -H -p <remote-ssh-port> <remote-ip> >> .ssh/known_hosts
    ```
 
 3. **Re-apply the firewall**:
@@ -175,11 +175,21 @@ Set `"isolation": "chroot"` in `config.json`, then:
    make test HOST=my-server
    ```
 
-#### Test Remote Setup (Container Host Machine)
+#### Setup OpenClaw
 ```bash
-make restart
-make test HOST=remote-host    # channge remote-host by your config remote server host name
+docker exec -it openclaw bash
+openclaw onboard
+# or openclaw config (for specific config edits)
 ```
+ - For the gateway config set the port to `18789` and gateway bind Mode `LAN`
+- After setting up the config and to access openclaw dashboard via localhost:8090, copy the generated token from openclaw.json file and past it in the dashboard token authentification field, next execute the following commands inside the openclaw container:
+  ```bash
+  openclaw devices list
+  ```
+* Get the device request id and execute the following command:
+  ```bash
+  openclaw devices approve <device-id>
+  ```
 
 #### Remote Host — `restricted_key` mode (RunPod / Docker containers)
 

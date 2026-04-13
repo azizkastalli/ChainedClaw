@@ -38,7 +38,7 @@ confirm_uninstall() {
     echo "  - Docker volumes"
     echo "  - Chroot jails for all configured hosts"
     echo "  - SSH keys (project .ssh/ directory)"
-    echo "  - Dashboard auth (/etc/openclaw/nginx/)"
+    echo "  - Dashboard auth (nginx/.htpasswd)"
     echo "  - Project .ssh directory"
     echo "  - Project .openclaw-data directory"
     echo ""
@@ -152,18 +152,12 @@ remove_ssh_keys() {
 # Remove dashboard auth
 remove_dashboard_auth() {
     log_step "Removing dashboard authentication..."
-    
-    if [ -d "/etc/openclaw/nginx" ]; then
-         rm -rf /etc/openclaw/nginx
-        log_info "Removed /etc/openclaw/nginx"
+
+    if [ -f "$PROJECT_ROOT/nginx/.htpasswd" ]; then
+        rm -f "$PROJECT_ROOT/nginx/.htpasswd"
+        log_info "Removed $PROJECT_ROOT/nginx/.htpasswd"
     fi
-    
-    # Remove the entire /etc/openclaw directory if empty
-    if [ -d "/etc/openclaw" ] && [ -z "$(ls -A /etc/openclaw 2>/dev/null)" ]; then
-         rmdir /etc/openclaw
-        log_info "Removed empty /etc/openclaw directory"
-    fi
-    
+
     log_info "Dashboard auth removed"
 }
 
