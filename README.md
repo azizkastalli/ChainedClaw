@@ -1,4 +1,4 @@
-# OpenClaw
+# ChainedClaw
 
 AI agent platform with SSH bridge to your local GPU machine.
 
