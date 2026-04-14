@@ -9,7 +9,20 @@
       "isolation": "chroot",
       "project_paths": [
         "/path/to/your/project"
-      ]
+      ],
+      "forward_ports": []
+    },
+    {
+      "name": "my-dev-server",
+      "hostname": "192.168.1.101",
+      "port": 22,
+      "user": "openclaw-bot",
+      "strict_host_key_checking": true,
+      "isolation": "chroot",
+      "project_paths": [
+        "/path/to/your/project"
+      ],
+      "forward_ports": [3000, 8080]
     },
     {
       "name": "my-runpod",

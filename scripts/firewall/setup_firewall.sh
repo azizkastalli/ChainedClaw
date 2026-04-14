@@ -431,6 +431,26 @@ run_watch_mode() {
     done
 }
 
+# Show forward_ports per host from config.json (informational — enforced by PermitOpen on remote sshd)
+show_forward_ports() {
+    if [ ! -f "$CONFIG_JSON" ] || ! command -v jq &>/dev/null; then
+        return
+    fi
+    local any_ports=false
+    while IFS= read -r line; do
+        local name ports
+        name=$(echo "$line" | jq -r '.name')
+        ports=$(echo "$line" | jq -r '.forward_ports // [] | map(tostring) | join(", ")')
+        if [ -n "$ports" ]; then
+            log_info "  $name → forward_ports: $ports  (enforced via PermitOpen in remote sshd)"
+            any_ports=true
+        fi
+    done < <(jq -c '.ssh_hosts[]' "$CONFIG_JSON" 2>/dev/null)
+    if [ "$any_ports" = false ]; then
+        echo "  (no forward_ports configured — AllowTcpForwarding no on all hosts)"
+    fi
+}
+
 # Show current firewall status
 show_status() {
     log_info "Current OPENCLAW-FIREWALL rules:"
@@ -440,6 +460,9 @@ show_status() {
     log_info "Active allowed SSH destinations:"
     iptables -L FORWARD -n | grep "$FIREWALL_MARKER" | grep ACCEPT | \
         while read -r _ _ _ _ _ _ _ _ _ dst _ dpt _; do echo "$dst -> port $dpt"; done | sort -u || echo "  (none)"
+    echo ""
+    log_info "Allowed port forwards per host (enforced by PermitOpen on remote sshd, not iptables):"
+    show_forward_ports
 }
 
 # Main script body

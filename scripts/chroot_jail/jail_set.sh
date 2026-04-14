@@ -95,6 +95,15 @@ get_project_paths() {
         "$CONFIG_JSON" 2>/dev/null
 }
 
+# Function to get forward_ports from config.json for a given host
+# Returns space-separated list of port numbers, empty string if none configured
+get_forward_ports() {
+    local host="$1"
+    jq -r --arg name "$host" \
+        '.ssh_hosts[] | select(.name == $name) | .forward_ports // [] | .[] | tostring' \
+        "$CONFIG_JSON" 2>/dev/null | tr '\n' ' ' | xargs
+}
+
 # Read isolation mode (default: chroot)
 ISOLATION=$(jq -r --arg name "$HOST_NAME" \
     '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
@@ -454,22 +463,56 @@ log_warn ""
 # 7. Configure sshd
 echo "[Configuring sshd...]"
 
-SSHD_CONFIG_BLOCK="
-# BEGIN OpenClaw Bot Chroot Configuration
+# Read forward_ports for this host and build PermitOpen / AllowTcpForwarding lines.
+# If forward_ports is empty: AllowTcpForwarding no  (no tunnelling at all)
+# If forward_ports is set:   AllowTcpForwarding local + PermitOpen localhost:PORT ...
+#   PermitOpen is the definitive enforcement — the remote sshd will refuse forwarding
+#   requests to any destination not in this list, regardless of client flags.
+FORWARD_PORTS=$(get_forward_ports "$HOST_NAME")
+
+if [ -n "$FORWARD_PORTS" ]; then
+    # Validate: each value must be a plain integer in 1-65535
+    PERMIT_OPEN_LINE=""
+    for port in $FORWARD_PORTS; do
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            log_error "Invalid port in forward_ports for $HOST_NAME: '$port' (must be 1-65535)"
+            exit 1
+        fi
+        PERMIT_OPEN_LINE="${PERMIT_OPEN_LINE} localhost:${port}"
+    done
+    PERMIT_OPEN_LINE="${PERMIT_OPEN_LINE# }"  # trim leading space
+
+    TCP_FORWARDING_LINE="AllowTcpForwarding local"
+    PERMIT_OPEN_CONFIG="    PermitOpen ${PERMIT_OPEN_LINE}"
+    log_info "Port forwarding enabled for: $PERMIT_OPEN_LINE"
+else
+    TCP_FORWARDING_LINE="AllowTcpForwarding no"
+    PERMIT_OPEN_CONFIG=""
+    log_info "Port forwarding disabled (no forward_ports configured)"
+fi
+
+SSHD_CONFIG_BLOCK="# BEGIN OpenClaw Bot Chroot Configuration
 Match User $AGENT_USER
     ChrootDirectory $CHROOT_BASE
     X11Forwarding no
-    AllowTcpForwarding no
+    ${TCP_FORWARDING_LINE}
     PermitTunnel no
-# END OpenClaw Bot Chroot Configuration
-"
+${PERMIT_OPEN_CONFIG}
+# END OpenClaw Bot Chroot Configuration"
 
-if ! grep -q "# BEGIN OpenClaw Bot Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
-    echo "$SSHD_CONFIG_BLOCK" |  tee -a /etc/ssh/sshd_config > /dev/null
-    echo "  Added ChrootDirectory config."
+# Always replace the block so changes to forward_ports are picked up on re-run.
+# Strategy: remove lines between the BEGIN/END markers (inclusive), then append fresh block.
+if grep -q "# BEGIN OpenClaw Bot Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
+    # Remove the existing block (BEGIN through END, inclusive)
+     sed -i '/# BEGIN OpenClaw Bot Chroot Configuration/,/# END OpenClaw Bot Chroot Configuration/d' \
+        /etc/ssh/sshd_config
+    echo "  Replaced existing ChrootDirectory config."
 else
-    echo "  ChrootDirectory already configured."
+    echo "  Adding ChrootDirectory config."
 fi
+
+# Remove any blank lines that sed may have left at the end, then append
+printf '\n%s\n' "$SSHD_CONFIG_BLOCK" |  tee -a /etc/ssh/sshd_config > /dev/null
 
 echo ""
 echo "=== Setup Complete ==="
