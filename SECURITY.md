@@ -1,341 +1,143 @@
-# OpenClaw Security Guide
+# OpenClaw Security Model
 
-This document outlines the security architecture for the OpenClaw dev setup.
-It reflects the **actual implemented state** — aspirational items are tracked in
-the [Hardening Roadmap](#hardening-roadmap) section.
+The openclaw container is treated as **fully compromised at all times**. Every layer
+is designed around: *"If the agent is hijacked via prompt injection, what can it reach?"*
 
-## Security Architecture
+---
 
-### Defense Layers (Implemented)
+## What a compromised agent can and cannot do
 
-1. **Container Hardening** — `read_only` filesystem, `cap_drop: ALL`, `no-new-privileges`, non-root user
-2. **Host-Level Firewall** — Egress filtering on FORWARD chain, scoped to container IP, persistent by default
-3. **Chroot Isolation** — Agent users are jailed in isolated directories on SSH hosts
-4. **SSH Key-Only Auth** — Ed25519 keys generated on host, mounted read-only into container
-5. **Host Key Pinning** — `known_hosts` pre-seeded on first boot (empty file only), `StrictHostKeyChecking yes`
-6. **Dashboard Authentication** — Nginx basic auth, localhost binding only
-7. **Static IP Assignment** — Container IPs are static, validated by firewall
+| Can | Cannot |
+|-----|--------|
+| SSH to hosts in `config.json` | SSH to hosts not in `config.json` (firewall) |
+| Access `project_paths` on those hosts | Access other host filesystem paths (chroot) |
+| Forward ports listed in `forward_ports` | Forward unlisted ports (`PermitOpen`) |
+| Use inner Docker (Sysbox-namespaced) | Reach host Docker daemon (no socket mount) |
+| Reach the internet | Escape Sysbox to host kernel |
+| Spin up browser containers | Replace SSH keys (`.ssh` is read-only) |
 
-### Container Security
+---
 
-The OpenClaw container runs as **non-root user (UID 1000)** with significant restrictions:
+## Security Layers
 
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| `user` | 1000:1000 | Non-root process — reduced privilege surface |
-| `read_only` | true | Immutable root filesystem — prevents binary tampering and persistence |
-| `cap_drop` | ALL | No Linux kernel capabilities (no `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, etc.) |
-| `no-new-privileges` | true | Prevents privilege escalation via setuid binaries |
-| `tmpfs` | /tmp, /run | Ephemeral writable dirs required by the gateway process |
+### Container (Sysbox DinD)
 
-**Writable paths (bind mounts):**
-- `/home/openclaw/.openclaw` — Agent state, config, conversation history, npm cache
-- `/home/openclaw/.ssh` — SSH config (generated at runtime from config.json)
+OpenClaw uses `sysbox-runc` for Docker-in-Docker without `privileged: true`.
+Sysbox maps container root to an unprivileged host UID via Linux user namespaces.
+Inner containers are double-namespaced and cannot access host block devices.
 
-**Read-only mounts:**
-- `/home/openclaw/.ssh/id_openclaw` — SSH private key (host-managed)
-- `/home/openclaw/.ssh/id_openclaw.pub` — SSH public key (host-managed)
-- `/home/openclaw/.ssh/known_hosts` — Host keys (host-managed)
-- `/config.json` — SSH host configuration
-- `/entrypoint.sh` — Container startup script
+| Control | Protects against |
+|---|---|
+| `runtime: sysbox-runc` | Host kernel / host Docker escape from inner containers |
+| `no-new-privileges` | setuid/setgid escalation |
+| `.ssh` read-only | SSH key replacement and known_hosts tampering |
+| `openclaw-docker` named volume | Docker writes scoped away from host filesystem |
+| `tmpfs /tmp /run` | Temp file persistence across restarts |
+| Resource limits `cpus: 2.0 / memory: 2g` | CPU/memory DoS |
+| No host Docker socket | Host Docker daemon unreachable |
+| No host filesystem mounts | Host files unreachable |
 
+**Note on Sysbox DinD:** `read_only`, `user: 1000:1000`, and `cap_drop: ALL` are not
+set — the inner Docker daemon requires a writable filesystem and Sysbox needs standard
+capabilities for its namespace machinery. Host-escape protection is provided by Sysbox's
+user namespace isolation rather than Linux DAC controls.
 
-**Environment variables:**
-- `NPM_CONFIG_CACHE=/home/openclaw/.openclaw/npm-cache` — Isolated npm cache directory
-- `OPENCLAW_GATEWAY_BIND=172.28.0.10` — Gateway binds to the container's static IP only, not `0.0.0.0`; prevents other containers on the same Docker network from bypassing nginx
+### Firewall (iptables FORWARD chain)
 
-### Network Topology
+Applied automatically on `make up` / `make restart`. Restricts SSH egress from the
+container to IPs listed in `config.json`. Rules persist across reboots.
 
-```
-Host Machine
-│
-└── openclaw-net (bridge, IPv6 disabled)
-    ├── openclaw (172.28.0.10) ← SSH bridge to remote hosts
-    └── nginx (172.28.0.20)    ← Reverse proxy (localhost:8090 only)
-```
+### Host Chroot (SSH path)
 
-Both containers share a single Docker bridge network with:
-- **IPv6 disabled** — No IPv6 attack surface
-- **Static IPs** — Predictable addresses for firewall rules
-- **Nginx bound to localhost** — No external dashboard access
+| Control | Effect |
+|---|---|
+| `ChrootDirectory` | Agent sees only `project_paths` |
+| SSH/network tools stripped | Cannot lateral-move to other hosts |
+| `/proc`, `/sys` read-only | No kernel manipulation |
+| `AllowTcpForwarding local` or `no` | Controlled by `forward_ports` per host |
+| `PermitOpen localhost:PORT` | Port allowlist enforced at protocol level |
+| `PermitTunnel no` | No VPN tunnelling |
 
-### Host Firewall (FORWARD chain)
+`PermitOpen` is the definitive port-forward enforcement — the remote sshd rejects
+requests to any unlisted destination regardless of what the client sends.
 
-Egress filtering is applied on the host's `FORWARD` chain, scoped to the
-OpenClaw container's static IP.
+### Dashboard (nginx)
 
-**Rule order (per container IP):**
+Basic auth on all routes. Bound to `127.0.0.1:8090` only.
 
-| Priority | Rule | Action |
-|----------|------|--------|
-| 1 | Established/Related connections from container | ACCEPT |
-| 2 | SSH (port 22) to each IP in `config.json` | ACCEPT |
-| 3 | All other SSH from container | DROP |
+---
 
-**Key features:**
-- **Only affects OpenClaw container** — Other containers and host services are NOT affected
-- **Static IP validation** — Firewall validates container IP matches expected value
-- **Persistent by default** — Rules survive reboots (use `--no-persist` to disable)
-
-**Hostname resolution:** Entries in `config.json` may be IP addresses or hostnames. The firewall script resolves hostnames to IPs via `getent hosts` before applying rules, and skips any entry that cannot be resolved (with a warning). Invalid IPs (e.g. octets > 255) are also rejected before reaching `iptables`.
-
-**Note:** In default mode, non-SSH traffic (HTTP, DNS, etc.) is not filtered.
-Use `--block-all` mode to restrict all outbound traffic. See
-[Firewall Management](#firewall-management) for details.
-
-### Chroot Isolation (on SSH hosts)
-
-When the agent SSHes into a host, it lands in a chroot jail:
+## Blast Radius
 
 ```
-/srv/chroot/openclaw-bot/
-├── bin/, lib/, lib64/        ← bind-mounted read-only from host
-├── usr/lib, usr/lib64/       ← bind-mounted read-only from host
-├── usr/bin/                  ← SYMLINKS to host (SSH/network tools EXCLUDED)
-├── proc/, sys/               ← mounted read-only (dedicated filesystems)
-├── dev/null, dev/zero, dev/pts ← minimal device nodes
-├── etc/                      ← MINIMAL passwd/group (no host user info)
-│   ├── passwd                ← Only root, nobody
-│   └── group                 ← Only root, nogroup
-└── home/openclaw-bot/        ← bind-mounted READ-WRITE to project_paths
-    ├── project1/             ← /path/to/project1
-    └── project2/             ← /path/to/project2
-```
-
-**SSH/network binaries EXCLUDED from chroot:**
-- `ssh`, `scp`, `sftp` — Prevent jumping to other hosts
-- `ssh-keygen`, `ssh-keyscan`, `ssh-agent`, `ssh-add` — Prevent key operations
-- `nc`, `netcat`, `ncat`, `telnet`, `rsh`, `rlogin` — Prevent network tunneling
-
-**sshd restrictions for the agent user:**
-- `ChrootDirectory` — Jailed to `/srv/chroot/openclaw-bot`
-- `X11Forwarding no` — No X11 tunneling
-- `AllowTcpForwarding no` — No port forwarding
-- `PermitTunnel no` — No tunnel device
-
-**Security improvements:**
-- **SSH binaries removed via symlinks** — Agent cannot SSH to other hosts from within chroot
-- **Minimal /etc/passwd** — No host user information leaked
-- **curl, wget, python3 available** — Required for agent development work
-
-### SSH Key Management
-
-SSH keys are generated and managed on the **host**, not inside the container:
-
-```
-.ssh/                          ← In project root (bind-mounted)
-├── id_openclaw                ← Private key (600)
-├── id_openclaw.pub            ← Public key (644)
-└── known_hosts                ← Host keys (644)
-```
-
-**Benefits:**
-- Keys never exist in a writable location inside the container
-- Key rotation doesn't require container rebuild
-- Keys can be backed up independently
-
-**Setup:**
-```bash
-sudo bash scripts/ssh_key/init_keys.sh
-```
-
-### Dashboard Authentication
-
-The web dashboard is protected by HTTP Basic Authentication:
-
-- **Nginx basic auth** — Username/password required for all routes (`auth_basic` set at server level in `nginx/nginx.conf`)
-- **Localhost binding only** — `127.0.0.1:8090`, no external access
-- **Health endpoint exempt** — `/health` uses `auth_basic off` so monitoring tools are not blocked
-- **Credentials file** — `.htpasswd` stored at `/etc/nginx/.htpasswd` (mounted into nginx container), permissions `640` (readable by `root:www-data` only)
-
-**Setup:**
-```bash
-sudo bash scripts/nginx/init_htpasswd.sh
+prompt injection → agent
+  → inner Docker (Sysbox namespace — cannot reach host)
+  → SSH to config.json hosts only (firewall)
+    → project_paths only (chroot)
+    → localhost:PORT only (PermitOpen)
+  → internet (unfiltered — needed for Telegram, APIs)
 ```
 
 ---
 
-## Quick Start
+## Known Limitations
 
-### 1. Configure Environment
+### HIGH — Unfiltered inner Docker image pulls
 
-```bash
-cp .env.example .env
-# Edit .env — fill in your settings
-```
+The agent can `docker pull` from any registry. A malicious image runs inside the
+Sysbox namespace (cannot escape host) but can mine CPU, beacon out, or stage data
+for exfiltration.
 
-### 2. Initialize SSH Keys (on host)
-
-```bash
-sudo bash scripts/ssh_key/init_keys.sh
-```
-
-### 3. Initialize Dashboard Auth (on host)
-
-```bash
-sudo bash scripts/nginx/init_htpasswd.sh
-```
-
-### 4. Start Services
-
-```bash
-docker compose up -d
-```
-
-### 5. Set Up Firewall
-
-```bash
-sudo bash scripts/firewall/setup_firewall.sh
-```
-
-### 6. Set Up Chroot on Target Hosts
-
-On each host that openclaw will SSH into:
-
-```bash
-sudo bash scripts/chroot_jail/jail_set.sh my-host
-sudo systemctl reload sshd
-```
-
-### 7. Verify
-
-```bash
-docker exec -it openclaw ssh my-host whoami
-# Expected: openclaw-bot
-```
-
-Open the dashboard at `http://localhost:8090` (credentials from step 3).
+**Fix:** DNS-based egress filtering — allowlist known registries (`docker.io`, `ghcr.io`,
+`quay.io`) and block the rest, while still permitting agent internet access for APIs.
 
 ---
 
-## Security Checklist
+### MEDIUM — SSH tunnel binds to `0.0.0.0`
 
-### Container Security
-- [x] Container runs with `read_only: true` (immutable root filesystem)
-- [x] All capabilities dropped (`cap_drop: ALL`)
-- [x] `no-new-privileges` security option enabled
-- [x] Container runs as non-root user (UID 1000)
-- [x] Config and entrypoint mounted read-only into container
-- [x] SSH keys mounted read-only (host-managed)
-- [x] Nginx runs with read-only config mount
-- [x] npm cache isolated to bind-mounted directory
+For Playwright debugging the agent binds `-L 0.0.0.0:PORT:localhost:PORT` so inner
+Docker containers can reach the tunnel via the inner bridge gateway. This also makes
+the forwarded port reachable from nginx on `openclaw-net`.
 
-### Network Security
-- [x] Firewall egress filtering on FORWARD chain
-- [x] Firewall rules persisted by default (survive reboots)
-- [x] Static IP assignment with validation
-- [x] IPv6 disabled in Docker network
-- [x] Dashboard only accessible from localhost (127.0.0.1 binding)
-- [x] Dashboard protected by basic auth
-
-### Secret Management
-- [x] `.env` file NOT committed to version control (see `.gitignore`)
-- [x] `.env.example` template committed (no secrets, safe to commit)
-- [x] SSH key auth only (no passwords)
-- [x] SSH keys generated on host, not in container
-- [x] SSH keys mounted read-only into container
-
-### Host Security (requires sudo on SSH target)
-- [x] Chroot jail configured for agent user
-- [x] `/proc` and `/sys` mounted read-only inside chroot
-- [x] TCP forwarding and tunneling disabled in sshd
-- [x] SSH binaries excluded from chroot (symlink-based approach)
-- [x] Minimal `/etc/passwd` in chroot (no host user info)
-- [x] Firewall rules persist across reboots (default)
+**Fix:** Bind to the inner Docker bridge gateway IP only (e.g. `172.17.0.1`) instead
+of `0.0.0.0`, scoping the listener to inner containers only.
 
 ---
 
-## Without Remote sudo
+### MEDIUM — No audit trail
 
-If you don't have sudo on the SSH target machine, you **cannot** set up the
-chroot jail. The agent will still work — it SSHes in as a regular user — but
-it has full filesystem visibility limited only by that user's Unix permissions.
+No logging of SSH commands run in chroot, Docker images pulled, ports forwarded, or
+external IPs contacted. A compromised agent leaves no forensic record.
 
-**Mitigations without chroot:**
-- Add restrictions in `~/.ssh/authorized_keys` on the remote host:
-  ```
-  command="/bin/bash",no-X11-forwarding,no-port-forwarding,no-pty ssh-ed25519 AAAA... openclaw-agent
-  ```
-- Use `rssh` (restricted shell) if available on the remote
-- The host firewall still limits container egress regardless
+**Fix:** `LogLevel VERBOSE` in the sshd Match block (logs chroot commands on remote
+server). `auditd` on the openclaw host watching the container's cgroup. Ship logs to
+a write-once destination so the agent cannot tamper with them.
 
 ---
 
-## Firewall Management
+### LOW — known_hosts blind scan on first boot
 
-### Apply Rules (persistent by default)
-```bash
-sudo bash scripts/firewall/setup_firewall.sh
-```
+If `known_hosts` is empty when the container starts, `entrypoint.sh` runs
+`ssh-keyscan` — a MITM window. Pre-seeding before `make up` eliminates this.
 
-### Apply Rules Without Persistence
-```bash
-sudo bash scripts/firewall/setup_firewall.sh --no-persist
-```
-
-### Auto-Reload on config.json Changes
-```bash
-sudo bash scripts/firewall/setup_firewall.sh --watch
-```
-
-### Block ALL Non-SSH Outbound (strictest)
-```bash
-sudo bash scripts/firewall/setup_firewall.sh --block-all
-```
-
-### Remove All Firewall Rules
-```bash
-sudo bash scripts/firewall/setup_firewall.sh --flush
-```
-
-### Verify Active Rules
-```bash
-sudo iptables -L FORWARD -n -v | grep OPENCLAW-FIREWALL
-```
+**Fix:** Have `entrypoint.sh` refuse to start if a configured host has no
+`known_hosts` entry, making pre-seeding mandatory rather than advisory.
 
 ---
 
-## Blast Radius Analysis
+### LOW — `config.json` readable inside the container
 
-If the OpenClaw container is compromised:
+The agent can read `/config.json` (all hostnames, ports, paths). It cannot act
+on hosts not already configured, but it reduces reconnaissance effort.
 
-| Attack Vector | Impact | Mitigated? |
-|---------------|--------|------------|
-| Read SSH private key | Cannot — read-only mount | ✅ Host-managed keys |
-| SSH to allowed hosts | Can access project files in chroot | ✅ Chroot + firewall |
-| SSH to other IPs | Blocked by firewall | ✅ FORWARD chain DROP |
-| Modify gateway binary | Cannot — read-only filesystem | ✅ `read_only: true` |
-| Plant persistence | Cannot — no writable system paths | ✅ `read_only: true` + `cap_drop` |
-| Escalate to host | Cannot — no capabilities + non-root | ✅ `cap_drop: ALL` + `no-new-privileges` + UID 1000 |
-| Access nginx directly | Reduced — gateway binds to static IP, not 0.0.0.0 | ⚠️ No full DMZ segmentation |
-| Exfiltrate via HTTP/HTTPS | Possible in default firewall mode | ⚠️ Use `--block-all` |
-| Access dashboard | Requires auth + localhost | ✅ Basic auth + 127.0.0.1 binding |
-| SSH from chroot to other hosts | Cannot — SSH binaries excluded | ✅ Symlink exclusion |
-
-### Residual Risks
-
-1. **Partial network segmentation** — Nginx and OpenClaw share the same Docker network. The gateway now binds to its static IP (`172.28.0.10`) rather than `0.0.0.0`, so other containers cannot reach it directly without knowing the IP. Full DMZ separation is not implemented.
-2. **ssh-keyscan on first boot** — When `known_hosts` is empty, the entrypoint runs `ssh-keyscan` to pin host keys. This is vulnerable to MITM on the local network. On subsequent starts the scan is skipped (file has entries). **Mitigation:** Pre-seed `known_hosts` on the host before the first container start (`ssh-keyscan -H <hostname> >> .ssh/known_hosts`); the container will detect the non-empty file and skip the scan entirely.
-3. **Non-SSH egress not blocked by default** — HTTP/HTTPS/DNS traffic is allowed.
-   Use `--block-all` for strict egress control.
+**Fix:** Mount only the derived SSH config (generated by `entrypoint.sh`) rather
+than the raw `config.json`.
 
 ---
 
-## Hardening Roadmap
+### LOW — Sysbox install not signature-verified
 
-These items are not currently implemented but could be added for stronger
-security:
+The README install snippet uses a direct `.deb` download without GPG verification.
 
-| Item | Effort | Benefit | Notes |
-|------|--------|---------|-------|
-| DMZ network segmentation | Medium | Medium | Gateway binds to static IP (not 0.0.0.0); full DMZ still not implemented |
-| HTTPS for dashboard | Low | Low (dev) | Self-signed certs; only useful if accessed remotely |
-| SSH binary blocking in chroot | Done | High | ✅ Implemented — symlink exclusion approach |
-| IPv6 firewall rules | Done | Low | ✅ Implemented — IPv6 disabled in Docker network |
-
----
-
-## Reporting Security Issues
-
-If you discover a security vulnerability, please report it responsibly by
-opening a private security advisory on the project repository.
+**Fix:** Use the Nestybox apt repository or verify the package against the published
+signing key before installing.
