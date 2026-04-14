@@ -18,8 +18,8 @@
 #   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
 .PHONY: help uninstall config keys auth up down restart logs status \
-        chroot chroot-clean key-add key-remove sync firewall firewall-flush \
-        remote-setup remote-clean test clean purge
+        preflight setup chroot chroot-clean key-add key-remove sync \
+        firewall firewall-flush remote-setup remote-clean test clean purge
 
 # Default target
 .DEFAULT_GOAL := help
@@ -41,9 +41,10 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Host-specific targets (require HOST=name):"
-	@echo "  chroot            Set up chroot jail for HOST"
+	@echo "  setup             Full host setup: chroot + key + sshd reload (recommended)"
+	@echo "  chroot            Set up chroot jail for HOST (step 1 of setup)"
 	@echo "  chroot-clean      Tear down chroot for HOST"
-	@echo "  key-add           Install SSH key to HOST chroot"
+	@echo "  key-add           Install SSH key to HOST chroot (step 2 of setup)"
 	@echo "  key-remove        Remove SSH key from HOST chroot"
 	@echo "  sync              Re-sync SSH key to HOST (alias for key-add)"
 	@echo "  test              Test SSH connection to HOST"
@@ -67,6 +68,25 @@ help: ## Show this help message
 # Installation
 # ------------------------------------------------------------------------------
 
+sysbox-check: ## Verify Sysbox runtime is installed (required for DinD)
+	@if ! docker info --format '{{range .Runtimes}}{{.Path}} {{end}}' 2>/dev/null | grep -q sysbox; then \
+		echo ""; \
+		echo "ERROR: Sysbox runtime not found."; \
+		echo ""; \
+		echo "OpenClaw uses Sysbox to run Docker-in-Docker securely (without privileged mode)."; \
+		echo "Install Sysbox on Ubuntu/Debian:"; \
+		echo ""; \
+		echo "  VER=0.6.4"; \
+		echo "  wget https://downloads.nestybox.com/sysbox/releases/v\$$VER/sysbox-ce_\$$VER-0.linux_amd64.deb"; \
+		echo "  sudo apt-get install -y ./sysbox-ce_\$$VER-0.linux_amd64.deb"; \
+		echo ""; \
+		echo "After install, Docker automatically recognizes the sysbox-runc runtime."; \
+		echo "See https://github.com/nestybox/sysbox for other distros and docs."; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "Sysbox runtime found."
+
 uninstall: ## Full uninstallation (keeps images, config)
 	@echo "=== Uninstalling OpenClaw ==="
 	sudo bash $(SCRIPTS_DIR)/uninstall.sh
@@ -89,14 +109,22 @@ auth: ## Initialize dashboard authentication
 # Container Management
 # ------------------------------------------------------------------------------
 
-up: ## Start containers
+up: sysbox-check ## Start containers and apply firewall rules (mandatory together)
 	docker compose up -d
+	@echo ""
+	@echo "Applying firewall rules (requires sudo)..."
+	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
+	@echo ""
+	@echo "Security layers active. Run 'make preflight' to verify all layers."
 
 down: ## Stop containers
 	docker compose down
 
-restart: ## Restart containers
+restart: ## Restart containers and re-apply firewall rules
 	docker compose restart
+	@echo ""
+	@echo "Re-applying firewall rules (requires sudo)..."
+	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
 
 logs: ## Show container logs (follow mode)
 	docker logs -f $(CONTAINER_NAME)
@@ -104,9 +132,48 @@ logs: ## Show container logs (follow mode)
 status: ## Show container status
 	@docker compose ps
 
+preflight: sysbox-check ## Verify all security layers are active
+	@echo ""
+	@echo "=== OpenClaw Security Pre-flight ==="
+	@echo ""
+	@echo "[1/3] Sysbox runtime ............. OK"
+	@echo ""
+	@echo "[2/3] Firewall rules ..."
+	@if sudo iptables -L FORWARD -n 2>/dev/null | grep -q "OPENCLAW-FIREWALL"; then \
+		echo "      OK - OPENCLAW-FIREWALL rules are present"; \
+	else \
+		echo "      FAIL - no firewall rules found"; \
+		echo "      Fix: make up  (firewall is now applied automatically)"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "[3/3] Container status ..."
+	@if docker ps --filter "name=$(CONTAINER_NAME)" --filter "status=running" 2>/dev/null | grep -q "$(CONTAINER_NAME)"; then \
+		echo "      OK - container is running"; \
+	else \
+		echo "      FAIL - container is not running"; \
+		echo "      Fix: make up"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "All security layers active."
+	@echo "To verify per-host access: make test HOST=<name>"
+
 # ------------------------------------------------------------------------------
 # Chroot Management (requires HOST parameter)
 # ------------------------------------------------------------------------------
+
+setup: ## Full host setup in one step: chroot + SSH key + sshd reload (usage: make setup HOST=name)
+ifndef HOST
+	@echo "Error: HOST parameter required. Usage: make setup HOST=name"
+	@exit 1
+endif
+	@echo "=== Setting up host: $(HOST) ==="
+	sudo bash $(SCRIPTS_DIR)/chroot_jail/jail_set.sh $(HOST)
+	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
+	sudo systemctl reload sshd
+	@echo ""
+	@echo "Host $(HOST) is ready. Verify with: make test HOST=$(HOST)"
 
 chroot: ## Set up chroot jail for HOST (usage: make chroot HOST=name)
 ifndef HOST
