@@ -40,11 +40,12 @@ confirm_uninstall() {
     echo "  - SSH keys (project .ssh/ directory)"
     echo "  - Dashboard auth (nginx/.htpasswd)"
     echo "  - Project .ssh directory"
-    echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
     echo ""
     echo "This will NOT remove:"
     echo "  - Docker images (kept for reinstallation)"
     echo "  - .env and config.json files"
+    echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
+    echo "    Use 'make purge-data' to remove agent data"
     echo ""
     
     read -p "Are you sure you want to uninstall? (y/N): " -n 1 -r
@@ -195,14 +196,15 @@ show_summary() {
     echo "  ✓ Chroot jails"
     echo "  ✓ SSH keys"
     echo "  ✓ Dashboard authentication"
-    echo "  ✓ Data directories"
     echo ""
     echo "Kept:"
     echo "  • Docker images (use 'docker image prune' to remove)"
     echo "  • Configuration files (.env, config.json)"
+    echo "  • Agent data directories (.openclaw-data, .claudecode-data)"
+    echo "    Use 'make purge-data' to remove agent data"
     echo ""
     echo "To reinstall, run:"
-    echo "   bash scripts/install.sh"
+    echo "   make up AGENT=openclaw"
     echo ""
 }
 
@@ -214,7 +216,6 @@ main() {
     remove_containers
     remove_ssh_keys
     remove_dashboard_auth
-    remove_data
     reload_sshd
     show_summary
 }

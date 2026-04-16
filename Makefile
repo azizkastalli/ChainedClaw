@@ -19,7 +19,7 @@
 
 .PHONY: help uninstall config wizard keys auth build up down restart logs status \
         preflight setup chroot chroot-clean key-add key-remove sync \
-        firewall firewall-flush remote-setup remote-clean test clean purge \
+        firewall firewall-flush remote-setup remote-clean test clean purge purge-data \
         security-check
 
 # Default target
@@ -146,8 +146,15 @@ endif
 	@echo "Re-applying firewall rules (requires sudo)..."
 	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
 
-shell: ## Open a shell inside the container as the agent user
-	docker exec -it -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) bash
+shell: ## Open a shell inside the container as the agent user (with SSH_AUTH_SOCK)
+	@SOCKET=$$(docker exec -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) bash -c 'ls /tmp/ssh-*/agent.* 2>/dev/null | head -1'); \
+	if [ -n "$$SOCKET" ]; then \
+		echo "SSH agent socket: $$SOCKET"; \
+		docker exec -it -u $(AGENT_EXEC_USER) -e SSH_AUTH_SOCK="$$SOCKET" $(CONTAINER_NAME) bash; \
+	else \
+		echo "Warning: No SSH agent socket found"; \
+		docker exec -it -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) bash; \
+	fi
 
 logs: ## Show container logs (follow mode)
 	docker logs -f $(CONTAINER_NAME)
@@ -340,10 +347,40 @@ clean: ## Remove generated runtime files (htpasswd, tmp data)
 	rm -f nginx/.htpasswd 2>/dev/null || true
 	@echo "Runtime files removed"
 
-purge: ## Full cleanup including config files (WARNING: destructive)
-	@echo "WARNING: This will remove all OpenClaw data including configuration files!"
-	@read -p "Are you sure? (y/N): " confirm && [ "$$confirm" = "y" ] || exit 1
+purge-data: ## Remove agent data directories (WARNING: destructive)
+	@echo ""
+	@echo "=========================================="
+	@echo "  WARNING: This will permanently delete all agent data!"
+	@echo "=========================================="
+	@echo ""
+	@echo "This will remove:"
+	@echo "  - .openclaw-data/    (OpenClaw config, workspaces, history)"
+	@echo "  - .claudecode-data/  (Claude Code config, sessions)"
+	@echo ""
+	@echo "This action cannot be undone!"
+	@echo ""
+	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
+	@echo ""
+	rm -rf .openclaw-data .claudecode-data
+	@echo "Agent data directories removed."
+
+purge: ## Full cleanup including config files and data (WARNING: destructive)
+	@echo ""
+	@echo "=========================================="
+	@echo "  WARNING: This will remove ALL OpenClaw data!"
+	@echo "=========================================="
+	@echo ""
+	@echo "This will remove:"
+	@echo "  - Docker containers and chroots"
+	@echo "  - SSH keys"
+	@echo "  - Configuration files (.env, config.json)"
+	@echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
+	@echo ""
+	@echo "This action cannot be undone!"
+	@echo ""
+	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
 	$(MAKE) uninstall
 	rm -f .env config.json
 	rm -rf .openclaw-data .claudecode-data
+	@echo ""
 	@echo "Purge complete"
