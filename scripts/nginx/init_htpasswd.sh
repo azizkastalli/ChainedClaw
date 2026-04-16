@@ -27,7 +27,7 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-echo "=== Initializing OpenClaw Dashboard Auth ==="
+echo "=== Initializing Dashboard Auth ==="
 echo "  File: $HTPASSWD_FILE"
 echo ""
 
@@ -59,7 +59,7 @@ else
 fi
 
 # Create htpasswd file (always overwrite)
-DASHBOARD_USER="${DASHBOARD_USER:-openclaw}"
+DASHBOARD_USER="${DASHBOARD_USER:-agent-dev}"
 echo "$DASHBOARD_PASSWORD" | htpasswd -i -c "$HTPASSWD_FILE" "$DASHBOARD_USER"
 
 chmod 644 "$HTPASSWD_FILE"

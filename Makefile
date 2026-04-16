@@ -17,16 +17,21 @@
 #   make remote-setup HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 #   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
-.PHONY: help uninstall config keys auth up down restart logs status \
+.PHONY: help uninstall config wizard keys auth build up down restart logs status \
         preflight setup chroot chroot-clean key-add key-remove sync \
-        firewall firewall-flush remote-setup remote-clean test clean purge
+        firewall firewall-flush remote-setup remote-clean test clean purge \
+        security-check
 
 # Default target
 .DEFAULT_GOAL := help
 
 # Configuration
 SCRIPTS_DIR := scripts
-CONTAINER_NAME := openclaw
+CONTAINER_NAME ?= $(shell grep -E '^AGENT_CONTAINER_NAME=' .env 2>/dev/null | cut -d= -f2 | sed 's/#.*//' | tr -d ' ')
+CONTAINER_NAME := $(or $(CONTAINER_NAME),agent-dev)
+# Agent user inside the running container (read from container env at make-time)
+AGENT_EXEC_USER := $(shell docker inspect $(CONTAINER_NAME) --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^AGENT_USER=' | cut -d= -f2 | tr -d ' ')
+AGENT_EXEC_USER := $(or $(AGENT_EXEC_USER),root)
 
 # ------------------------------------------------------------------------------
 # Help
@@ -60,7 +65,6 @@ help: ## Show this help message
 	@echo "  make chroot HOST=my-host        # Set up chroot for local host"
 	@echo "  make key-add HOST=my-host       # Install SSH key to local chroot"
 	@echo "  make remote-setup HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
-	@echo "  make remote-clean HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
 	@echo "  make test HOST=my-host          # Test SSH to my-host"
 	@echo "  make logs                       # Show container logs"
 
@@ -68,28 +72,12 @@ help: ## Show this help message
 # Installation
 # ------------------------------------------------------------------------------
 
-sysbox-check: ## Verify Sysbox runtime is installed (required for DinD)
-	@if ! docker info --format '{{range .Runtimes}}{{.Path}} {{end}}' 2>/dev/null | grep -q sysbox; then \
-		echo ""; \
-		echo "ERROR: Sysbox runtime not found."; \
-		echo ""; \
-		echo "OpenClaw uses Sysbox to run Docker-in-Docker securely (without privileged mode)."; \
-		echo "Install Sysbox on Ubuntu/Debian:"; \
-		echo ""; \
-		echo "  VER=0.6.4"; \
-		echo "  wget https://downloads.nestybox.com/sysbox/releases/v\$$VER/sysbox-ce_\$$VER-0.linux_amd64.deb"; \
-		echo "  sudo apt-get install -y ./sysbox-ce_\$$VER-0.linux_amd64.deb"; \
-		echo ""; \
-		echo "After install, Docker automatically recognizes the sysbox-runc runtime."; \
-		echo "See https://github.com/nestybox/sysbox for other distros and docs."; \
-		echo ""; \
-		exit 1; \
-	fi
-	@echo "Sysbox runtime found."
-
 uninstall: ## Full uninstallation (keeps images, config)
 	@echo "=== Uninstalling OpenClaw ==="
 	sudo bash $(SCRIPTS_DIR)/uninstall.sh
+
+wizard: ## Run the interactive setup wizard
+	python3 wizard.py
 
 config: ## Copy example config files if not exist
 	@if [ ! -f .env ]; then \
@@ -99,32 +87,67 @@ config: ## Copy example config files if not exist
 		cp config.example.json config.json && echo "Created config.json"; \
 	fi
 
-keys: ## Initialize SSH keys
+keys: ## Initialize SSH keys and data directories
 	sudo bash $(SCRIPTS_DIR)/ssh_key/init_keys.sh
 
 auth: ## Initialize dashboard authentication
 	bash $(SCRIPTS_DIR)/nginx/init_htpasswd.sh
 
+build: ## Build agent image (usage: make build AGENT=openclaw|claudecode)
+ifndef AGENT
+	@echo "Error: AGENT required. Usage: make build AGENT=openclaw|claudecode"
+	@exit 1
+endif
+ifeq ($(filter $(AGENT),openclaw claudecode),)
+	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+	@exit 1
+endif
+	docker compose --profile $(AGENT) build
+
 # ------------------------------------------------------------------------------
 # Container Management
 # ------------------------------------------------------------------------------
 
-up: sysbox-check ## Start containers and apply firewall rules (mandatory together)
-	docker compose up -d
+up: security-check ## Start an agent container + firewall (usage: make up AGENT=openclaw|claudecode)
+ifndef AGENT
+	@echo ""
+	@echo "Error: AGENT is required."
+	@echo ""
+	@echo "  make up AGENT=openclaw     OpenClaw agent + nginx dashboard"
+	@echo "  make up AGENT=claudecode   Claude Code agent (headless, internal firewall)"
+	@echo ""
+	@exit 1
+endif
+ifeq ($(filter $(AGENT),openclaw claudecode),)
+	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+	@exit 1
+endif
+	docker compose --profile $(AGENT) up -d
 	@echo ""
 	@echo "Applying firewall rules (requires sudo)..."
-	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
+	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
 	@echo ""
 	@echo "Security layers active. Run 'make preflight' to verify all layers."
 
-down: ## Stop containers
-	docker compose down
+down: ## Stop running agent container
+	docker compose --profile openclaw --profile claudecode down
 
-restart: ## Restart containers and re-apply firewall rules
-	docker compose restart
+restart: ## Restart agent container and re-apply firewall (usage: make restart AGENT=openclaw|claudecode)
+ifndef AGENT
+	@echo "Error: AGENT required. Usage: make restart AGENT=openclaw|claudecode"
+	@exit 1
+endif
+ifeq ($(filter $(AGENT),openclaw claudecode),)
+	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+	@exit 1
+endif
+	docker compose --profile $(AGENT) restart
 	@echo ""
 	@echo "Re-applying firewall rules (requires sudo)..."
-	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
+	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
+
+shell: ## Open a shell inside the container as the agent user
+	docker exec -it -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) bash
 
 logs: ## Show container logs (follow mode)
 	docker logs -f $(CONTAINER_NAME)
@@ -132,28 +155,71 @@ logs: ## Show container logs (follow mode)
 status: ## Show container status
 	@docker compose ps
 
-preflight: sysbox-check ## Verify all security layers are active
+# ------------------------------------------------------------------------------
+# Security
+# ------------------------------------------------------------------------------
+
+security-check: ## Verify seccomp profile and Docker capabilities support
+	@if [ ! -f security/seccomp-agent.json ]; then \
+		echo ""; \
+		echo "ERROR: Seccomp profile not found at security/seccomp-agent.json"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@if ! docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q seccomp; then \
+		echo ""; \
+		echo "ERROR: Docker seccomp support not detected."; \
+		echo "Seccomp is required for agent container security."; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "Security prerequisites OK (seccomp profile found, Docker supports seccomp)."
+
+preflight: ## Verify all security layers are active
 	@echo ""
 	@echo "=== OpenClaw Security Pre-flight ==="
 	@echo ""
-	@echo "[1/3] Sysbox runtime ............. OK"
+	@echo "[1/4] Seccomp profile ..........."
+	@if [ -f security/seccomp-agent.json ]; then \
+		echo "      OK - security/seccomp-agent.json present"; \
+	else \
+		echo "      FAIL - security/seccomp-agent.json missing"; \
+		exit 1; \
+	fi
 	@echo ""
-	@echo "[2/3] Firewall rules ..."
-	@if sudo iptables -L FORWARD -n 2>/dev/null | grep -q "OPENCLAW-FIREWALL"; then \
-		echo "      OK - OPENCLAW-FIREWALL rules are present"; \
+	@echo "[2/4] Firewall rules ..."
+	@if sudo iptables -L FORWARD -n 2>/dev/null | grep -q "AGENT-DEV-FIREWALL"; then \
+		echo "      OK - AGENT-DEV-FIREWALL rules are present"; \
 	else \
 		echo "      FAIL - no firewall rules found"; \
 		echo "      Fix: make up  (firewall is now applied automatically)"; \
 		exit 1; \
 	fi
 	@echo ""
-	@echo "[3/3] Container status ..."
+	@echo "[3/4] Container status ..."
 	@if docker ps --filter "name=$(CONTAINER_NAME)" --filter "status=running" 2>/dev/null | grep -q "$(CONTAINER_NAME)"; then \
 		echo "      OK - container is running"; \
 	else \
 		echo "      FAIL - container is not running"; \
 		echo "      Fix: make up"; \
 		exit 1; \
+	fi
+	@echo ""
+	@echo "[4/4] Container capabilities ..."
+	@if docker inspect $(CONTAINER_NAME) --format '{{.HostConfig.CapAdd}}' 2>/dev/null | grep -q "NET_ADMIN"; then \
+		echo "      OK - NET_ADMIN present (iptables rules)"; \
+	else \
+		echo "      WARN - NET_ADMIN not found (internal egress firewall may not work)"; \
+	fi
+	@if docker inspect $(CONTAINER_NAME) --format '{{.HostConfig.CapAdd}}' 2>/dev/null | grep -q "NET_RAW"; then \
+		echo "      OK - NET_RAW present (raw socket support for iptables)"; \
+	else \
+		echo "      WARN - NET_RAW not found (iptables may not function correctly)"; \
+	fi
+	@if docker inspect $(CONTAINER_NAME) --format '{{.HostConfig.CapDrop}}' 2>/dev/null | grep -q "ALL"; then \
+		echo "      OK - cap_drop: ALL (minimal capabilities)"; \
+	else \
+		echo "      WARN - cap_drop: ALL not set (container has more capabilities than needed)"; \
 	fi
 	@echo ""
 	@echo "All security layers active."
@@ -251,18 +317,19 @@ endif
 	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
 
 firewall: ## Set up firewall rules
-	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
+	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
 
 firewall-flush: ## Remove firewall rules
-	sudo bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh --flush
+	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh --flush
 
 test: ## Test SSH connection to HOST
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make test HOST=name"
 	@exit 1
 endif
-	@echo "Testing SSH connection to $(HOST)..."
-	docker exec -it $(CONTAINER_NAME) ssh $(HOST) whoami
+	@echo "Testing SSH connection to $(HOST) (as $(AGENT_EXEC_USER))..."
+	docker exec -i -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) \
+		bash -c 'SSH_AUTH_SOCK=$$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1); export SSH_AUTH_SOCK; ssh $(HOST) whoami'
 
 # ------------------------------------------------------------------------------
 # Cleanup
@@ -278,5 +345,5 @@ purge: ## Full cleanup including config files (WARNING: destructive)
 	@read -p "Are you sure? (y/N): " confirm && [ "$$confirm" = "y" ] || exit 1
 	$(MAKE) uninstall
 	rm -f .env config.json
-	rm -rf .openclaw-data
+	rm -rf .openclaw-data .claudecode-data
 	@echo "Purge complete"

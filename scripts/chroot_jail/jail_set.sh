@@ -291,7 +291,7 @@ if [[ ! "$CHROOT_USR_BIN" =~ ^"$CHROOT_BASE" ]]; then
     exit 1
 fi
 
-# SAFETY CHECK 2: Verify /srv/chroot/openclaw-bot/usr is NOT a bind mount to a critical system directory
+# SAFETY CHECK 2: Verify $CHROOT_BASE/usr is NOT a bind mount to a critical system directory
 # This prevents symlinks from being created in the host's /usr/bin
 if mountpoint -q "$CHROOT_BASE/usr" 2>/dev/null; then
     mount_source=$(findmnt -n -o SOURCE "$CHROOT_BASE/usr" 2>/dev/null)
@@ -328,8 +328,19 @@ fi
 
  mkdir -p "$CHROOT_USR_BIN"
 
+# Read docker_access flag — if true, docker will be available via rootless Docker
+DOCKER_ACCESS=$(jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .docker_access // false' \
+    "$CONFIG_JSON" 2>/dev/null)
+[ -z "$DOCKER_ACCESS" ] || [ "$DOCKER_ACCESS" = "null" ] && DOCKER_ACCESS="false"
+
 # List of binaries to EXCLUDE from chroot (security risk)
-EXCLUDE_BINARIES="ssh scp sftp ssh-keygen ssh-keyscan ssh-agent ssh-add nc netcat ncat telnet rsh rlogin"
+# Docker is excluded by default; if docker_access: true, rootless Docker is used instead
+if [ "$DOCKER_ACCESS" = "true" ]; then
+    EXCLUDE_BINARIES="ssh scp sftp ssh-keygen ssh-keyscan ssh-agent ssh-add nc netcat ncat telnet rsh rlogin"
+else
+    EXCLUDE_BINARIES="ssh scp sftp ssh-keygen ssh-keyscan ssh-agent ssh-add nc netcat ncat telnet rsh rlogin docker"
+fi
 
 # Create symlinks for all binaries in /usr/bin, excluding the dangerous ones
 for binary in /usr/bin/*; do
@@ -491,20 +502,23 @@ else
     log_info "Port forwarding disabled (no forward_ports configured)"
 fi
 
-SSHD_CONFIG_BLOCK="# BEGIN OpenClaw Bot Chroot Configuration
+SSHD_CONFIG_BLOCK="# BEGIN Dev-Agent Chroot Configuration
 Match User $AGENT_USER
     ChrootDirectory $CHROOT_BASE
     X11Forwarding no
     ${TCP_FORWARDING_LINE}
     PermitTunnel no
+    ClientAliveInterval 300
+    ClientAliveCountMax 3
+    MaxSessions 3
 ${PERMIT_OPEN_CONFIG}
-# END OpenClaw Bot Chroot Configuration"
+# END Dev-Agent Chroot Configuration"
 
 # Always replace the block so changes to forward_ports are picked up on re-run.
 # Strategy: remove lines between the BEGIN/END markers (inclusive), then append fresh block.
-if grep -q "# BEGIN OpenClaw Bot Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
+if grep -q "# BEGIN Dev-Agent Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
     # Remove the existing block (BEGIN through END, inclusive)
-     sed -i '/# BEGIN OpenClaw Bot Chroot Configuration/,/# END OpenClaw Bot Chroot Configuration/d' \
+     sed -i '/# BEGIN Dev-Agent Chroot Configuration/,/# END Dev-Agent Chroot Configuration/d' \
         /etc/ssh/sshd_config
     echo "  Replaced existing ChrootDirectory config."
 else
@@ -513,6 +527,31 @@ fi
 
 # Remove any blank lines that sed may have left at the end, then append
 printf '\n%s\n' "$SSHD_CONFIG_BLOCK" |  tee -a /etc/ssh/sshd_config > /dev/null
+
+# 8. Apply chroot egress filter (if enabled in config.json)
+EGRESS_FILTER=$(jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .chroot_egress_filter // false' \
+    "$CONFIG_JSON" 2>/dev/null)
+[ -z "$EGRESS_FILTER" ] || [ "$EGRESS_FILTER" = "null" ] && EGRESS_FILTER="false"
+
+if [ "$EGRESS_FILTER" = "true" ]; then
+    echo ""
+    echo "[Applying chroot egress filter...]"
+    bash "$SCRIPT_DIR/chroot_egress_filter.sh" "$HOST_NAME"
+    log_info "Chroot egress filter active — outbound from $AGENT_USER restricted to DNS + package registries"
+else
+    log_info "Chroot egress filter not enabled (set chroot_egress_filter: true in config.json to enable)"
+fi
+
+# 9. Set up rootless Docker (if docker_access: true in config.json)
+if [ "$DOCKER_ACCESS" = "true" ]; then
+    echo ""
+    echo "[Setting up rootless Docker...]"
+    bash "$SCRIPT_DIR/setup_rootless_docker.sh" "$HOST_NAME"
+    log_info "Rootless Docker available in chroot (user namespace isolated — no --privileged, no host access)"
+else
+    log_info "Docker access not enabled (set docker_access: true in config.json to enable rootless Docker)"
+fi
 
 echo ""
 echo "=== Setup Complete ==="
@@ -524,4 +563,4 @@ done
 echo ""
 echo "Next steps:"
 echo "  1.  systemctl reload sshd"
-echo "  2. docker exec -it openclaw ssh $HOST_NAME ls"
+echo "  2. docker exec -it agent-dev ssh $HOST_NAME ls"

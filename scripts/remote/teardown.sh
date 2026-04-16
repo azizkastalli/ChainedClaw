@@ -2,7 +2,7 @@
 #
 # Tear down chroot jail on a remote SSH host
 # Runs jail_break.sh on the remote using the previously copied scripts
-# in /tmp/openclaw-scripts, then removes that directory.
+# in /tmp/agent-dev-scripts, then removes that directory.
 #
 # hostname and port are read from config.json using the host name.
 #
@@ -40,7 +40,7 @@ fi
 HOST_NAME="$1"
 SSH_KEY="$2"
 REMOTE_USER="${3:-$(whoami)}"
-REMOTE_DIR="/tmp/openclaw-scripts"
+REMOTE_DIR="/tmp/agent-dev-scripts"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

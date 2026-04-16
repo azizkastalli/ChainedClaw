@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SSH_DIR="$PROJECT_ROOT/.ssh"
-KEY_FILE="$SSH_DIR/id_openclaw"
+KEY_FILE="$SSH_DIR/id_agent"
 KNOWN_HOSTS="$SSH_DIR/known_hosts"
 
 # Colors for output
@@ -22,24 +22,24 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-echo "=== Initializing OpenClaw SSH Keys ==="
+echo "=== Initializing SSH Keys ==="
 echo "  Directory: $SSH_DIR"
 echo ""
 
 # Create .ssh directory
 mkdir -p "$SSH_DIR"
 
-# Also create .openclaw-data directory if it doesn't exist
-OPENCLAW_DATA_DIR="$PROJECT_ROOT/.openclaw-data"
-if [ ! -d "$OPENCLAW_DATA_DIR" ]; then
-    mkdir -p "$OPENCLAW_DATA_DIR"
-    log_info "Created $OPENCLAW_DATA_DIR"
-fi
-
+# Create agent data directories if they don't exist
+for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
+    if [ ! -d "$_DATA_DIR" ]; then
+        mkdir -p "$_DATA_DIR"
+        log_info "Created $_DATA_DIR"
+    fi
+done
 # Generate key if not exists
 if [ ! -f "$KEY_FILE" ]; then
     log_info "Generating Ed25519 key..."
-    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "openclaw-agent"
+    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "agent-dev"
     log_info "Key generated: $KEY_FILE"
 else
     log_warn "Key already exists: $KEY_FILE"
@@ -47,7 +47,7 @@ else
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -f "$KEY_FILE" "$KEY_FILE.pub"
-        ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "openclaw-agent"
+        ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "agent-dev"
         log_info "Key regenerated: $KEY_FILE"
     fi
 fi
@@ -59,18 +59,26 @@ if [ ! -f "$KNOWN_HOSTS" ]; then
 fi
 
 # Set permissions
-chmod 700 "$SSH_DIR"
-chmod 600 "$KEY_FILE"
+# Directory: world-traversable so container root (cap_drop:ALL) can enter it.
+# Private key: group root (gid 0) + mode 640 so container root reads via group
+#              membership without needing CAP_DAC_READ_SEARCH.
+#              The entrypoint copies the key into tmpfs and chmod 600s the copy
+#              before passing it to SSH, so SSH's strict-mode check still passes.
+# Public key and known_hosts: world-readable (no secret).
+chmod 755 "$SSH_DIR"
+chmod 640 "$KEY_FILE"
 chmod 644 "$KEY_FILE.pub"
 chmod 644 "$KNOWN_HOSTS"
 
-# Fix ownership for Docker container (user 1000)
-# When run with sudo, keys are created as root and container can't read them
+# Ownership: uid 1000 (claudecode / node user), gid 0 (root group for openclaw)
+# - claudecode (uid 1000): is owner → can read private key (6__)
+# - openclaw   (uid 0):    is in gid 0 → can read private key (__4_) + traverse dir
 if [ "$EUID" -eq 0 ]; then
-    # Running as root (sudo) - set ownership to user 1000 for Docker
-    chown -R 1000:1000 "$SSH_DIR"
-    chown 1000:1000 "$OPENCLAW_DATA_DIR"
-    log_info "Set ownership to UID 1000 for Docker container access"
+    chown 1000:0 "$SSH_DIR" "$KEY_FILE" "$KEY_FILE.pub" "$KNOWN_HOSTS"
+    for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
+        [ -d "$_DATA_DIR" ] && chown 1000:1000 "$_DATA_DIR"
+    done
+    log_info "Set ownership to uid 1000:gid 0 for dual-container access"
 else
     log_info "Ownership kept as current user (running without sudo)"
 fi

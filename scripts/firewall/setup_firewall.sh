@@ -64,16 +64,16 @@ fi
 CONFIG_JSON="${SCRIPT_DIR}/../../config.json"
 # NETWORK_NAME is available for future use (e.g., network-specific rules)
 # shellcheck disable=SC2034
-NETWORK_NAME="${OPENCLAW_NETWORK_NAME:-openclaw-net}"
-CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-openclaw}"
-FIREWALL_MARKER="OPENCLAW-FIREWALL"
+NETWORK_NAME="${AGENT_NETWORK_NAME:-agent-dev-net}"
+CONTAINER_NAME="${AGENT_CONTAINER_NAME:-agent-dev}"
+FIREWALL_MARKER="AGENT-DEV-FIREWALL"
 WATCH_MODE=false
 STRICT_MODE=false
 BLOCK_ALL=false
 PERSIST_MODE=true  # Default to persistent
 
 # Expected static IP for validation (must match docker-compose.yaml)
-EXPECTED_OPENCLAW_IP="${EXPECTED_OPENCLAW_IP:-172.28.0.10}"
+EXPECTED_AGENT_IP="${EXPECTED_AGENT_IP:-172.28.0.10}"
 
 # Check if running as root (skip for --help)
 if [ "$SHOW_HELP" = false ]; then
@@ -111,7 +111,7 @@ for arg in "$@"; do
         echo "  --strict     Block all outbound SSH (no whitelist exceptions)"
         echo "  --block-all  Block ALL non-SSH outbound traffic (stricter - blocks HTTP/HTTPS/DNS)"
         echo "  --no-persist Do NOT save rules across reboots (default is to persist)"
-        echo "  --flush      Remove all OpenClaw firewall rules"
+        echo "  --flush      Remove all agent-dev firewall rules"
         echo "  --help       Show this help message"
         echo ""
         echo "Note: Rules are persisted by default. Use --no-persist for ephemeral rules."
@@ -158,10 +158,10 @@ install_persistence() {
         log_info "Rules saved to /etc/iptables/rules.v4"
 
         # Create restore service if not present
-        if [ ! -f /etc/systemd/system/openclaw-firewall-restore.service ]; then
-            cat > /etc/systemd/system/openclaw-firewall-restore.service << 'EOF'
+        if [ ! -f /etc/systemd/system/agent-dev-firewall-restore.service ]; then
+            cat > /etc/systemd/system/agent-dev-firewall-restore.service << 'EOF'
 [Unit]
-Description=Restore OpenClaw iptables firewall rules
+Description=Restore agent-dev iptables firewall rules
 After=network.target docker.service
 Wants=docker.service
 
@@ -174,7 +174,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
             systemctl daemon-reload
-            systemctl enable openclaw-firewall-restore.service
+            systemctl enable agent-dev-firewall-restore.service
             log_info "Created systemd service for rule restoration on boot"
         fi
     else
@@ -202,23 +202,32 @@ check_config() {
 }
 
 # Get container IP on the network
+# Tries docker inspect first; falls back to EXPECTED_AGENT_IP when running under
+# sudo with a rootless Docker socket (inspect returns empty because root and the
+# unprivileged user see different sockets).
 get_container_ip() {
     local ip
     ip=$(docker inspect \
         --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' \
         "$CONTAINER_NAME" 2>/dev/null | tr ' ' '\n' | grep -v '^$' | head -1)
 
+    if [ -z "$ip" ] && [ -n "${EXPECTED_AGENT_IP:-}" ]; then
+        echo -e "${YELLOW}[WARN]${NC} docker inspect returned empty (rootless Docker / sudo socket mismatch)." >&2
+        echo -e "${YELLOW}[WARN]${NC} Falling back to static IP from .env: $EXPECTED_AGENT_IP" >&2
+        ip="$EXPECTED_AGENT_IP"
+    fi
+
     echo "$ip"
 }
 
 # Validate container IP matches expected static IP
 validate_container_ip() {
-    if [ "$OPENCLAW_IP" != "$EXPECTED_OPENCLAW_IP" ]; then
+    if [ "$AGENT_IP" != "$EXPECTED_AGENT_IP" ]; then
         log_error "=========================================="
         log_error "CONTAINER IP MISMATCH DETECTED!"
         log_error "=========================================="
-        log_error "  Expected: $EXPECTED_OPENCLAW_IP"
-        log_error "  Actual:   $OPENCLAW_IP"
+        log_error "  Expected: $EXPECTED_AGENT_IP"
+        log_error "  Actual:   $AGENT_IP"
         log_error ""
         log_error "This usually means:"
         log_error "  1. Container was not started with static IP"
@@ -227,17 +236,17 @@ validate_container_ip() {
         log_error ""
         log_error "Check docker-compose.yaml has:"
         log_error "  networks:"
-        log_error "    openclaw-net:"
-        log_error "      ipv4_address: $EXPECTED_OPENCLAW_IP"
+        log_error "    agent-dev-net:"
+        log_error "      ipv4_address: $EXPECTED_AGENT_IP"
         log_error ""
         log_error "Then restart: docker compose down && docker compose up -d"
         log_error "=========================================="
         exit 1
     fi
-    log_info "Container IP validated: $OPENCLAW_IP (matches expected static IP)"
+    log_info "Container IP validated: $AGENT_IP (matches expected static IP)"
 }
 
-# Remove all existing OPENCLAW-FIREWALL rules from FORWARD chain
+# Remove all existing AGENT-DEV-FIREWALL rules from FORWARD chain
 flush_openclaw_rules() {
     log_info "Flushing existing OpenClaw firewall rules..."
     # Loop until no more marked rules exist
@@ -284,22 +293,28 @@ resolve_to_ip() {
 # Apply firewall rules
 apply_firewall_rules() {
     log_info "Reading allowed SSH hosts from config.json..."
-    mapfile -t RAW_HOSTS < <(jq -r '.ssh_hosts[].hostname' "$CONFIG_JSON" 2>/dev/null)
+    # Read hostname:port pairs — use the configured port, not always 22
+    mapfile -t RAW_ENTRIES < <(jq -r '.ssh_hosts[] | "\(.hostname):\(.port // 22)"' "$CONFIG_JSON" 2>/dev/null)
 
-    if [ ${#RAW_HOSTS[@]} -eq 0 ]; then
+    if [ ${#RAW_ENTRIES[@]} -eq 0 ]; then
         log_error "No SSH hosts found in config.json"
         return 1
     fi
 
     # Resolve all hostnames/IPs and validate before touching iptables
-    ALLOWED_IPS=()
-    for raw in "${RAW_HOSTS[@]}"; do
-        [ -z "$raw" ] && continue
-        resolved=$(resolve_to_ip "$raw") || continue
+    # ALLOWED_ENTRIES holds "ip:port" strings
+    ALLOWED_ENTRIES=()
+    ALLOWED_IPS=()  # kept for the summary log
+    for entry in "${RAW_ENTRIES[@]}"; do
+        [ -z "$entry" ] && continue
+        raw_host="${entry%:*}"
+        raw_port="${entry##*:}"
+        resolved=$(resolve_to_ip "$raw_host") || continue
+        ALLOWED_ENTRIES+=("$resolved:$raw_port")
         ALLOWED_IPS+=("$resolved")
     done
 
-    if [ ${#ALLOWED_IPS[@]} -eq 0 ]; then
+    if [ ${#ALLOWED_ENTRIES[@]} -eq 0 ]; then
         log_error "No valid IPs could be resolved from config.json ssh_hosts"
         return 1
     fi
@@ -308,15 +323,15 @@ apply_firewall_rules() {
 
     # Get OpenClaw container IP
     log_info "Getting OpenClaw container IP..."
-    OPENCLAW_IP=$(get_container_ip)
+    AGENT_IP=$(get_container_ip)
 
-    if [ -z "$OPENCLAW_IP" ]; then
+    if [ -z "$AGENT_IP" ]; then
         log_error "Container '$CONTAINER_NAME' not found or not running"
         log_error "Start the container first: docker compose up -d"
         return 1
     fi
 
-    log_info "OpenClaw container IP: $OPENCLAW_IP"
+    log_info "Container IP: $AGENT_IP"
 
     # Validate IP matches expected static IP
     validate_container_ip
@@ -324,7 +339,7 @@ apply_firewall_rules() {
     # Remove existing rules for a clean slate
     flush_openclaw_rules
 
-    log_info "Installing new firewall rules for $OPENCLAW_IP ..."
+    log_info "Installing new firewall rules for $AGENT_IP ..."
 
     # Block-all mode: block ALL non-SSH outbound traffic from container
     if [ "$BLOCK_ALL" = true ]; then
@@ -332,84 +347,90 @@ apply_firewall_rules() {
 
         # 1. Allow established/related connections (return traffic) - MUST be first
         iptables -I FORWARD 1 \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -m conntrack --ctstate ESTABLISHED,RELATED \
             -m comment --comment "$FIREWALL_MARKER" \
             -j ACCEPT
 
-        # 2. Allow SSH only to whitelisted IPs
-        for ALLOWED_IP in "${ALLOWED_IPS[@]}"; do
-            [ -z "$ALLOWED_IP" ] && continue
+        # 2. Allow SSH only to whitelisted IPs/ports
+        for entry in "${ALLOWED_ENTRIES[@]}"; do
+            [ -z "$entry" ] && continue
+            ALLOWED_IP="${entry%:*}"
+            ALLOWED_PORT="${entry##*:}"
             iptables -A FORWARD \
-                -s "$OPENCLAW_IP" -d "$ALLOWED_IP" \
-                -p tcp --dport 22 \
+                -s "$AGENT_IP" -d "$ALLOWED_IP" \
+                -p tcp --dport "$ALLOWED_PORT" \
                 -m comment --comment "$FIREWALL_MARKER" \
                 -j ACCEPT
-            log_info "  BLOCK-ALL: Allowed SSH: $OPENCLAW_IP -> $ALLOWED_IP:22"
+            log_info "  BLOCK-ALL: Allowed SSH: $AGENT_IP -> $ALLOWED_IP:$ALLOWED_PORT"
         done
 
         # 3. Block all other outbound traffic (default deny)
         iptables -A FORWARD \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -m comment --comment "$FIREWALL_MARKER" \
             -j DROP
-        log_info "  BLOCK-ALL: Blocked all other outbound traffic from $OPENCLAW_IP"
+        log_info "  BLOCK-ALL: Blocked all other outbound traffic from $AGENT_IP"
 
     elif [ "$STRICT_MODE" = true ]; then
         # Strict mode: block ALL outbound SSH from container
         # 1. Allow established/related connections (return traffic)
         iptables -I FORWARD 1 \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -m conntrack --ctstate ESTABLISHED,RELATED \
             -m comment --comment "$FIREWALL_MARKER" \
             -j ACCEPT
 
-        # 2. Allow SSH only to whitelisted IPs
-        for ALLOWED_IP in "${ALLOWED_IPS[@]}"; do
-            [ -z "$ALLOWED_IP" ] && continue
+        # 2. Allow SSH only to whitelisted IPs/ports
+        for entry in "${ALLOWED_ENTRIES[@]}"; do
+            [ -z "$entry" ] && continue
+            ALLOWED_IP="${entry%:*}"
+            ALLOWED_PORT="${entry##*:}"
             iptables -A FORWARD \
-                -s "$OPENCLAW_IP" -d "$ALLOWED_IP" \
-                -p tcp --dport 22 \
+                -s "$AGENT_IP" -d "$ALLOWED_IP" \
+                -p tcp --dport "$ALLOWED_PORT" \
                 -m comment --comment "$FIREWALL_MARKER" \
                 -j ACCEPT
-            log_info "  STRICT: Allowed SSH: $OPENCLAW_IP -> $ALLOWED_IP:22"
+            log_info "  STRICT: Allowed SSH: $AGENT_IP -> $ALLOWED_IP:$ALLOWED_PORT"
         done
 
         # 3. Block all other outbound SSH (default deny)
         iptables -A FORWARD \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -p tcp --dport 22 \
             -m comment --comment "$FIREWALL_MARKER" \
             -j DROP
-        log_info "  STRICT: Blocked all other outbound SSH from $OPENCLAW_IP"
+        log_info "  STRICT: Blocked all other outbound SSH from $AGENT_IP"
 
     else
         # Default mode: Allow SSH to whitelisted IPs only
         # 1. Allow established/related connections (return traffic)
         iptables -I FORWARD 1 \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -m conntrack --ctstate ESTABLISHED,RELATED \
             -m comment --comment "$FIREWALL_MARKER" \
             -j ACCEPT
 
-        # 2. Allow SSH only to whitelisted IPs
-        for ALLOWED_IP in "${ALLOWED_IPS[@]}"; do
-            [ -z "$ALLOWED_IP" ] && continue
+        # 2. Allow SSH only to whitelisted IPs/ports
+        for entry in "${ALLOWED_ENTRIES[@]}"; do
+            [ -z "$entry" ] && continue
+            ALLOWED_IP="${entry%:*}"
+            ALLOWED_PORT="${entry##*:}"
             iptables -A FORWARD \
-                -s "$OPENCLAW_IP" -d "$ALLOWED_IP" \
-                -p tcp --dport 22 \
+                -s "$AGENT_IP" -d "$ALLOWED_IP" \
+                -p tcp --dport "$ALLOWED_PORT" \
                 -m comment --comment "$FIREWALL_MARKER" \
                 -j ACCEPT
-            log_info "  DEFAULT: Allowed SSH: $OPENCLAW_IP -> $ALLOWED_IP:22"
+            log_info "  DEFAULT: Allowed SSH: $AGENT_IP -> $ALLOWED_IP:$ALLOWED_PORT"
         done
 
         # 3. Block all other outbound SSH (default deny)
         iptables -A FORWARD \
-            -s "$OPENCLAW_IP" \
+            -s "$AGENT_IP" \
             -p tcp --dport 22 \
             -m comment --comment "$FIREWALL_MARKER" \
             -j DROP
-        log_info "  DEFAULT: Blocked all other outbound SSH from $OPENCLAW_IP"
+        log_info "  DEFAULT: Blocked all other outbound SSH from $AGENT_IP"
     fi
 }
 
@@ -453,7 +474,7 @@ show_forward_ports() {
 
 # Show current firewall status
 show_status() {
-    log_info "Current OPENCLAW-FIREWALL rules:"
+    log_info "Current AGENT-DEV-FIREWALL rules:"
     echo ""
     iptables -L FORWARD -n --line-numbers -v | grep "$FIREWALL_MARKER" || echo "  (no rules found)"
     echo ""
@@ -476,7 +497,7 @@ if [ "$SHOW_HELP" = true ]; then
     echo "  --strict     Block all outbound SSH (no whitelist exceptions)"
     echo "  --block-all  Block ALL non-SSH outbound traffic (stricter - blocks HTTP/HTTPS/DNS)"
     echo "  --no-persist Do NOT save rules across reboots (default is to persist)"
-    echo "  --flush      Remove all OpenClaw firewall rules"
+    echo "  --flush      Remove all agent-dev firewall rules"
     echo "  --help       Show this help message"
     echo ""
     echo "Note: Rules are persisted by default. Use --no-persist for ephemeral rules."
@@ -492,7 +513,7 @@ if [ "$FLUSH_MODE" = true ]; then
     fi
     flush_openclaw_rules
     echo ""
-    log_info "All OpenClaw firewall rules have been removed."
+    log_info "All agent-dev firewall rules have been removed."
     echo ""
     show_status
     exit 0
@@ -511,7 +532,7 @@ else
     fi
 
     echo ""
-    log_info "Done! OpenClaw container ($OPENCLAW_IP) can only SSH to:"
+    log_info "Done! Agent container ($AGENT_IP) can only SSH to:"
     for IP in "${ALLOWED_IPS[@]}"; do
         log_info "  - $IP"
     done
@@ -530,5 +551,5 @@ else
 
     echo ""
     log_info "To auto-reload on config.json changes:"
-    log_info "   bash scripts/setup_firewall.sh --watch"
+    log_info "   bash scripts/firewall/setup_firewall.sh --watch"
 fi

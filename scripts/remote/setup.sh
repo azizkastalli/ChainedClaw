@@ -6,7 +6,7 @@
 #
 # hostname and port are read from config.json using the host name.
 #
-# The /tmp/openclaw-scripts directory is intentionally left on the remote
+# The /tmp/agent-dev-scripts directory is intentionally left on the remote
 # so that teardown.sh can use it later without re-copying files.
 #
 # Usage: setup.sh <host-name> <ssh-key> [remote-user]
@@ -43,7 +43,7 @@ fi
 HOST_NAME="$1"
 SSH_KEY="$2"
 REMOTE_USER="${3:-$(whoami)}"
-REMOTE_DIR="/tmp/openclaw-scripts"
+REMOTE_DIR="/tmp/agent-dev-scripts"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -57,7 +57,7 @@ if [ ! -f "$SSH_KEY" ]; then
     exit 1
 fi
 
-for f in "$PROJECT_ROOT/.env" "$PROJECT_ROOT/config.json" "$PROJECT_ROOT/.ssh/id_openclaw.pub"; do
+for f in "$PROJECT_ROOT/.env" "$PROJECT_ROOT/config.json" "$PROJECT_ROOT/.ssh/id_agent.pub"; do
     if [ ! -f "$f" ]; then
         log_error "Required file not found: $f"
         exit 1
@@ -122,22 +122,27 @@ log_info "  SSH key   : $SSH_KEY"
 log_info "  Remote dir: $REMOTE_DIR"
 echo ""
 
-# 1. Create directory structure on remote
+# 1. Create directory structure on remote (restricted permissions)
 log_info "[1/4] Creating remote directory structure..."
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR/.ssh"
-log_info "  Created $REMOTE_DIR/.ssh on $REMOTE_IP"
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR/.ssh && chmod 700 $REMOTE_DIR"
+log_info "  Created $REMOTE_DIR/.ssh on $REMOTE_IP (chmod 700)"
 
-# 2. Copy all required files
+# 2. Copy required files (only what's needed — NOT the full .env which may contain secrets)
 log_info "[2/4] Copying files to remote..."
 scp -r "${SCP_OPTS[@]}" \
     "$PROJECT_ROOT/scripts/" \
-    "$PROJECT_ROOT/.env" \
     "$PROJECT_ROOT/config.json" \
     "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"
 scp "${SCP_OPTS[@]}" \
-    "$PROJECT_ROOT/.ssh/id_openclaw.pub" \
+    "$PROJECT_ROOT/.ssh/id_agent.pub" \
     "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/.ssh/"
-log_info "  Copied scripts, .env, config.json, id_openclaw.pub"
+
+# Copy only the specific variables needed by the remote scripts (not the full .env)
+# This avoids leaking DASHBOARD_PASSWORD and other unrelated secrets on remote hosts.
+grep -E '^(AGENT_USER|AGENT_CONTAINER_NAME|CHROOT_BASE)=' "$PROJECT_ROOT/.env" > /tmp/openclaw-env-scoped 2>/dev/null || true
+scp "${SCP_OPTS[@]}" /tmp/openclaw-env-scoped "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/.env"
+rm -f /tmp/openclaw-env-scoped
+log_info "  Copied scripts, scoped .env, config.json, id_agent.pub"
 
 # 3. Run setup and install SSH key
 log_info "[3/4] Running setup and installing SSH key on remote..."

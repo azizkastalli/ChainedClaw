@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Install SSH public key for the openclaw agent.
+# Install SSH public key for the dev agent.
 #
 # Isolation modes (set per-host in config.json):
 #   chroot        — installs key into chroot + real home (default)
@@ -50,15 +50,18 @@ if [ -n "$HOST_NAME" ] && [ -f "$CONFIG_JSON" ] && command -v jq &>/dev/null; th
 fi
 
 # Read the public key
-SSH_KEY_FILE="$SCRIPT_DIR/../../.ssh/id_openclaw.pub"
+SSH_KEY_FILE="$SCRIPT_DIR/../../.ssh/id_agent.pub"
+CONTAINER_NAME="${AGENT_CONTAINER_NAME:-agent-dev}"
 if [ -f "$SSH_KEY_FILE" ]; then
     KEY=$(cat "$SSH_KEY_FILE")
     log_info "Using SSH key from: $SSH_KEY_FILE"
 else
-    KEY=$(docker exec openclaw cat /home/openclaw/.ssh/id_openclaw.pub 2>/dev/null)
+    KEY=$(docker exec "$CONTAINER_NAME" cat /home/openclaw/.ssh-keys/id_agent.pub 2>/dev/null \
+          || docker exec "$CONTAINER_NAME" cat /home/node/.ssh-keys/id_agent.pub 2>/dev/null \
+          || docker exec "$CONTAINER_NAME" cat /root/.ssh/id_agent.pub 2>/dev/null)
     if [ -z "$KEY" ]; then
         log_error "SSH public key not found"
-        log_error "Tried: $SSH_KEY_FILE and container /home/openclaw/.ssh/id_openclaw.pub"
+        log_error "Tried: $SSH_KEY_FILE and container $CONTAINER_NAME:~/.ssh-keys/id_agent.pub"
         log_error "Run: make keys"
         exit 1
     fi

@@ -1,12 +1,17 @@
 {
+  "allowed_domains": [
+    "api.openai.com"
+  ],
   "ssh_hosts": [
     {
       "name": "my-server",
       "hostname": "192.168.1.100",
       "port": 22,
-      "user": "openclaw-bot",
+      "user": "dev-bot",
       "strict_host_key_checking": true,
       "isolation": "chroot",
+      "chroot_egress_filter": true,
+      "docker_access": false,
       "project_paths": [
         "/path/to/your/project"
       ],
@@ -16,9 +21,11 @@
       "name": "my-dev-server",
       "hostname": "192.168.1.101",
       "port": 22,
-      "user": "openclaw-bot",
+      "user": "dev-bot",
       "strict_host_key_checking": true,
       "isolation": "chroot",
+      "chroot_egress_filter": true,
+      "docker_access": false,
       "project_paths": [
         "/path/to/your/project"
       ],
@@ -28,7 +35,7 @@
       "name": "my-runpod",
       "hostname": "104.21.0.1",
       "port": 22022,
-      "user": "openclaw-bot",
+      "user": "dev-bot",
       "strict_host_key_checking": true,
       "isolation": "restricted_key",
       "project_paths": [

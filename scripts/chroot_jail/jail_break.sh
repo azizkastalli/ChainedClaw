@@ -91,6 +91,23 @@ fi
 
 echo "=== Cleaning up Chroot setup for host: $HOST_NAME ==="
 
+# 0. Remove chroot egress filter and rootless Docker (if active)
+echo "[0/5] Removing security extensions..."
+
+# Remove egress filter
+if [ -f "$SCRIPT_DIR/chroot_egress_filter.sh" ]; then
+    bash "$SCRIPT_DIR/chroot_egress_filter.sh" "$HOST_NAME" --flush 2>/dev/null || true
+else
+    echo "  Egress filter script not found, skipping"
+fi
+
+# Remove rootless Docker
+if [ -f "$SCRIPT_DIR/setup_rootless_docker.sh" ]; then
+    bash "$SCRIPT_DIR/setup_rootless_docker.sh" "$HOST_NAME" --uninstall 2>/dev/null || true
+else
+    echo "  Rootless Docker script not found, skipping"
+fi
+
 # 1. Kill user processes
 echo "[1/5] Killing user processes..."
  pkill -u "$AGENT_USER" 2>/dev/null || echo "  No active processes."
@@ -181,12 +198,15 @@ fi
 
 # 5. Remove sshd config
 echo "[5/5] Removing sshd config..."
-if grep -q "# BEGIN OpenClaw Bot Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
-     sed -i '/# BEGIN OpenClaw Bot Chroot Configuration/,/# END OpenClaw Bot Chroot Configuration/d' /etc/ssh/sshd_config
+if grep -q "# BEGIN Dev-Agent Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
+     sed -i '/# BEGIN Dev-Agent Chroot Configuration/,/# END Dev-Agent Chroot Configuration/d' /etc/ssh/sshd_config
     echo "  Removed ChrootDirectory config."
+elif grep -q "# BEGIN OpenClaw Bot Chroot Configuration" /etc/ssh/sshd_config 2>/dev/null; then
+     sed -i '/# BEGIN OpenClaw Bot Chroot Configuration/,/# END OpenClaw Bot Chroot Configuration/d' /etc/ssh/sshd_config
+    echo "  Removed legacy ChrootDirectory config."
 elif grep -q "ChrootDirectory.*$AGENT_USER" /etc/ssh/sshd_config 2>/dev/null; then
      sed -i '/# OpenClaw Bot Chroot Configuration/,+5d' /etc/ssh/sshd_config
-    echo "  Removed legacy ChrootDirectory config."
+    echo "  Removed legacy ChrootDirectory config (no markers)."
 fi
 
 # Clean up real home directory

@@ -34,13 +34,13 @@ confirm_uninstall() {
     echo "========================================"
     echo ""
     echo "This will remove:"
-    echo "  - Docker containers (openclaw, openclaw-nginx)"
+    echo "  - Docker containers (agent-dev, agent-dev-nginx)"
     echo "  - Docker volumes"
     echo "  - Chroot jails for all configured hosts"
     echo "  - SSH keys (project .ssh/ directory)"
     echo "  - Dashboard auth (nginx/.htpasswd)"
     echo "  - Project .ssh directory"
-    echo "  - Project .openclaw-data directory"
+    echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
     echo ""
     echo "This will NOT remove:"
     echo "  - Docker images (kept for reinstallation)"
@@ -122,7 +122,7 @@ remove_containers() {
     cd "$PROJECT_ROOT"
     
     # Stop containers and remove volumes
-    if docker ps -a | grep -q openclaw; then
+    if docker ps -a | grep -q "agent-dev\|openclaw"; then
         docker compose down -v
         log_info "Containers and volumes stopped and removed"
     else
@@ -131,7 +131,7 @@ remove_containers() {
     
     # Remove any orphaned Docker volumes
     log_info "Checking for orphaned Docker volumes..."
-    docker volume ls -q | grep openclaw | xargs -r docker volume rm 2>/dev/null || true
+    docker volume ls -q | grep "agent-dev\|openclaw" | xargs -r docker volume rm 2>/dev/null || true
     
     log_info "Docker cleanup complete"
 }
@@ -165,11 +165,13 @@ remove_dashboard_auth() {
 remove_data() {
     log_step "Removing data directories..."
     
-    # Remove .openclaw-data
-    if [ -d "$PROJECT_ROOT/.openclaw-data" ]; then
-        rm -rf "$PROJECT_ROOT/.openclaw-data"
-        log_info "Removed $PROJECT_ROOT/.openclaw-data"
-    fi
+    # Remove agent data directories
+    for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
+        if [ -d "$_DATA_DIR" ]; then
+            rm -rf "$_DATA_DIR"
+            log_info "Removed $_DATA_DIR"
+        fi
+    done
     
     log_info "Data directories removed"
 }
