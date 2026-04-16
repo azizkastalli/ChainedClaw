@@ -32,8 +32,8 @@ onMounted(fetchData)
 <template>
   <div class="dashboard-page">
     <div class="page-header">
-      <h1 class="page-title">Dashboard</h1>
-      <p class="page-subtitle">OpenClaw infrastructure overview</p>
+      <h1 class="page-title">Overview</h1>
+      <p class="page-subtitle">Agent Manager infrastructure status</p>
     </div>
 
     <div v-if="loading" class="loading-container">
@@ -159,41 +159,35 @@ onMounted(fetchData)
 /* Stats Grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
 }
 
 .stat-card {
-  background: white;
-  border-radius: 16px;
-  padding: 20px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  padding: 16px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.05);
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.stat-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.1);
+  gap: 14px;
 }
 
 .stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 42px;
+  height: 42px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 24px;
+  font-size: 20px;
+  background: #252525;
+  border: 1px solid #3a3a3a;
 }
 
-.stat-icon.security { background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); }
-.stat-icon.containers { background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); }
-.stat-icon.hosts { background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); }
-.stat-icon.warnings { background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); }
+.stat-icon.security { background: #1e3a5f; border-color: #2563eb; }
+.stat-icon.containers { background: #14532d; border-color: #16a34a; }
+.stat-icon.hosts { background: #713f12; border-color: #ca8a04; }
+.stat-icon.warnings { background: #7f1d1d; border-color: #dc2626; }
 
 .stat-content {
   display: flex;
@@ -201,121 +195,121 @@ onMounted(fetchData)
 }
 
 .stat-label {
-  font-size: 13px;
-  color: #6b7280;
-  margin-bottom: 4px;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 2px;
+  text-transform: uppercase;
 }
 
 .stat-value {
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 600;
   text-transform: capitalize;
 }
 
-.stat-value.success { color: #16a34a; }
-.stat-value.warning { color: #d97706; }
-.stat-value.danger { color: #dc2626; }
-.stat-value.info { color: #2563eb; }
+.stat-value.success { color: #4ade80; }
+.stat-value.warning { color: #facc15; }
+.stat-value.danger { color: #f87171; }
+.stat-value.info { color: #60a5fa; }
 
 /* Container Grid */
 .container-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .container-item {
-  background: #f9fafb;
-  border-radius: 12px;
-  padding: 14px;
-  transition: background 0.2s;
+  background: #0f0f0f;
+  border: 1px solid #2a2a2a;
+  padding: 12px;
 }
 
 .container-item:hover {
-  background: #f3f4f6;
+  border-color: #3a3a3a;
 }
 
 .container-info {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .container-name {
-  font-weight: 600;
-  color: #1f2937;
-  font-size: 14px;
+  font-weight: 500;
+  color: #e5e5e5;
+  font-size: 13px;
 }
 
 .container-image {
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 11px;
+  color: #666;
 }
 
 /* Quick Actions */
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
 }
 
 .action-btn {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  border-radius: 12px;
+  gap: 10px;
+  padding: 14px;
+  background: #0f0f0f;
+  border: 1px solid #2a2a2a;
   text-decoration: none;
-  color: #374151;
+  color: #e5e5e5;
   font-weight: 500;
-  transition: all 0.2s;
-  border: 1px solid #e2e8f0;
+  font-size: 13px;
+  transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  border-color: #93c5fd;
-  color: #1d4ed8;
-  transform: translateY(-2px);
+  background: #1a1a1a;
+  border-color: #2563eb;
+  color: #60a5fa;
 }
 
 .action-icon {
-  font-size: 20px;
+  font-size: 18px;
 }
 
 /* Alerts */
 .alerts-card {
-  border-left: 4px solid #f59e0b;
+  border-left: 3px solid #f59e0b;
 }
 
 .alerts-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .alert-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 14px;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
 }
 
 .alert-item.danger {
-  background: #fef2f2;
-  color: #991b1b;
+  background: #1f1315;
+  border: 1px solid #7f1d1d;
+  color: #fca5a5;
 }
 
 .alert-item.warning {
-  background: #fffbeb;
-  color: #92400e;
+  background: #1c1917;
+  border: 1px solid #78350f;
+  color: #fde68a;
 }
 
 .alert-icon {
-  font-size: 16px;
+  font-size: 14px;
 }
 </style>

@@ -104,7 +104,7 @@ onMounted(fetchContainers)
     <div class="page-header">
       <div>
         <h1 class="page-title">Containers</h1>
-        <p class="page-subtitle">Manage your OpenClaw containers</p>
+        <p class="page-subtitle">Manage your containers</p>
       </div>
       <div class="header-actions">
         <button @click="startContainers" :disabled="actionLoading !== ''" class="btn btn-success btn-sm">
@@ -202,112 +202,102 @@ onMounted(fetchContainers)
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: 12px;
 }
 
 .header-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 /* Containers Grid */
 .containers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
 }
 
 .container-card {
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.05);
-  overflow: hidden;
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.container-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.1);
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
 }
 
 .container-header {
-  padding: 20px;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 16px;
+  border-bottom: 1px solid #2a2a2a;
 }
 
 .container-title-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .container-name {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: #ffffff;
 }
 
 .container-meta {
   display: flex;
-  gap: 16px;
+  gap: 12px;
 }
 
 .meta-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #6b7280;
+  gap: 4px;
+  font-size: 12px;
+  color: #888;
 }
 
 .meta-icon {
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .health-status {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .health-badge {
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 11px;
+  padding: 2px 8px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
 .health-badge.healthy {
-  background: #dcfce7;
-  color: #166534;
+  background: #166534;
+  color: #86efac;
 }
 
 .health-badge.unhealthy {
-  background: #fee2e2;
-  color: #991b1b;
+  background: #991b1b;
+  color: #fca5a5;
 }
 
 .health-badge.starting {
-  background: #fef3c7;
-  color: #92400e;
+  background: #854d0e;
+  color: #fde047;
 }
 
 .container-actions {
-  padding: 16px 20px;
+  padding: 12px 16px;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  background: #f9fafb;
+  background: #0f0f0f;
 }
 
 /* Modal */
 .modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.8);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -316,66 +306,63 @@ onMounted(fetchContainers)
 }
 
 .modal {
-  background: white;
-  border-radius: 20px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
   width: 100%;
   max-width: 900px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 }
 
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 16px 20px;
+  border-bottom: 1px solid #2a2a2a;
 }
 
 .modal-header h2 {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
-  color: #1f2937;
+  color: #ffffff;
 }
 
 .modal-close {
-  background: #f3f4f6;
+  background: #2a2a2a;
   border: none;
-  font-size: 24px;
+  font-size: 20px;
   cursor: pointer;
-  color: #6b7280;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  color: #888;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
 }
 
 .modal-close:hover {
-  background: #e5e7eb;
-  color: #1f2937;
+  background: #3a3a3a;
+  color: #fff;
 }
 
 .modal-body {
-  padding: 24px;
+  padding: 20px;
   overflow: auto;
   flex: 1;
 }
 
 .logs-output {
-  background: #0f172a;
-  color: #e2e8f0;
-  padding: 20px;
-  border-radius: 12px;
+  background: #0a0a0a;
+  color: #a3e635;
+  padding: 16px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   max-height: 500px;
   overflow: auto;
+  margin: 0;
 }
 </style>
