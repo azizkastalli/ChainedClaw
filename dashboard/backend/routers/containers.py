@@ -143,10 +143,12 @@ async def stream_logs(websocket: WebSocket, name: str):
 
 @router.websocket("/{name}/shell")
 async def container_shell(websocket: WebSocket, name: str):
-    """Interactive shell via WebSocket using docker exec."""
+    """Interactive shell via WebSocket using docker exec with TTY."""
     import docker
     import docker.errors
     import asyncio
+    import threading
+    import queue
     
     await websocket.accept()
 
@@ -159,54 +161,123 @@ async def container_shell(websocket: WebSocket, name: str):
         client = docker.from_env()
         container = client.containers.get(name)
         
-        # Send welcome message
-        await websocket.send_text(f"\r\nConnected to {name}\r\n")
-        await websocket.send_text(f"Type 'exit' to disconnect\r\n\r\n")
+        # Create exec instance with TTY enabled
+        exec_instance = client.api.exec_create(
+            container.id,
+            "/bin/bash",
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            tty=True,
+            privileged=False,
+            workdir=None
+        )
+        exec_id = exec_instance['Id']
         
-        # Simple command execution loop
-        while True:
+        # Start exec and get socket for bidirectional communication
+        sock = client.api.exec_start(exec_id, detach=False, tty=True, stream=True, socket=True)
+        
+        # Use the raw socket from the response
+        raw_sock = sock._sock if hasattr(sock, '_sock') else sock
+        
+        # Queue for output from container
+        output_queue = queue.Queue()
+        running = True
+        
+        def read_output():
+            """Read output from container in background thread."""
             try:
-                # Show prompt
-                await websocket.send_text("$ ")
-                
-                # Wait for command
-                cmd = await websocket.receive_text()
-
-                # Guard: ignore JSON control messages (e.g. resize events from xterm.js)
+                while running:
+                    try:
+                        data = raw_sock.recv(4096)
+                        if not data:
+                            break
+                        output_queue.put(data)
+                    except Exception:
+                        break
+            finally:
+                output_queue.put(None)  # Signal end
+        
+        # Start background reader thread
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        
+        # Send initial message
+        await websocket.send_text(f"\r\nConnected to {name}\r\n")
+        
+        async def send_output():
+            """Send queued output to websocket."""
+            while running:
                 try:
-                    msg = _json.loads(cmd)
-                    if isinstance(msg, dict):
-                        continue  # silently ignore all JSON control messages
-                except _json.JSONDecodeError:
-                    pass  # plain text command — fall through
-
-                if cmd.strip().lower() == 'exit':
-                    await websocket.send_text("\r\nDisconnected.\r\n")
-                    break
-
-                if not cmd.strip():
-                    continue
+                    data = output_queue.get(timeout=0.1)
+                    if data is None:
+                        return False
+                    # Decode and send
+                    try:
+                        text = data.decode('utf-8', errors='replace')
+                        await websocket.send_text(text)
+                    except:
+                        pass
+                except queue.Empty:
+                    pass
+                except Exception:
+                    pass
+            return True
+        
+        # Main loop: handle input from websocket
+        while running:
+            try:
+                # Check for output (non-blocking)
+                while not output_queue.empty():
+                    data = output_queue.get_nowait()
+                    if data is None:
+                        running = False
+                        break
+                    try:
+                        text = data.decode('utf-8', errors='replace')
+                        await websocket.send_text(text)
+                    except:
+                        pass
                 
-                # Execute command
-                result = docker_service.exec_in_container(name, ["/bin/bash", "-c", cmd])
-                
-                if result['success']:
-                    output = result['output']
-                    if output:
-                        await websocket.send_text(output)
-                        if not output.endswith('\n'):
-                            await websocket.send_text("\r\n")
-                else:
-                    await websocket.send_text(f"Error: {result['output']}\r\n")
+                # Wait for input with timeout
+                try:
+                    msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                     
-            except WebSocketDisconnect:
-                break
+                    # Ignore JSON control messages
+                    try:
+                        parsed = _json.loads(msg)
+                        if isinstance(parsed, dict):
+                            continue
+                    except _json.JSONDecodeError:
+                        pass
+                    
+                    # Send input to container
+                    raw_sock.send(msg.encode('utf-8'))
+                    
+                except asyncio.TimeoutError:
+                    continue
+                except WebSocketDisconnect:
+                    break
+                    
             except Exception as e:
-                await websocket.send_text(f"Error: {str(e)}\r\n")
-                
+                break
+        
+        # Cleanup
+        running = False
+        try:
+            raw_sock.close()
+        except:
+            pass
+                    
     except docker.errors.NotFound:
         await websocket.send_text(f"Error: Container '{name}' not found\r\n")
     except Exception as e:
-        await websocket.send_text(f"Error: {str(e)}\r\n")
+        try:
+            await websocket.send_text(f"Error: {str(e)}\r\n")
+        except:
+            pass
     finally:
-        await websocket.close()
+        try:
+            await websocket.close()
+        except:
+            pass

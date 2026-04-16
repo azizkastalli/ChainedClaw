@@ -4,7 +4,6 @@ import { dashboardApi, type AppConfig } from '../api/client'
 import { useToast } from '../composables/useToast'
 
 const { push } = useToast()
-
 const config = ref<AppConfig>({ allowed_domains: [], ssh_hosts: [] })
 const env = ref<Record<string, string>>({})
 const loading = ref(true)
@@ -77,28 +76,33 @@ onMounted(fetchData)
 </script>
 
 <template>
-  <div class="config">
-    <h1>Configuration</h1>
-    <div v-if="loading" class="loading">Loading...</div>
-    <div v-else-if="error" class="error">{{ error }}</div>
+  <div class="config-page">
+    <div class="page-header">
+      <h1 class="page-title">Configuration</h1>
+      <p class="page-subtitle">Manage application settings</p>
+    </div>
+
+    <div v-if="loading" class="loading-container"><div class="spinner"></div><span>Loading...</span></div>
+    <div v-else-if="error" class="error-message">{{ error }}</div>
+
     <template v-else>
       <div class="tabs">
-        <button :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">config.json</button>
-        <button :class="{ active: activeTab === 'env' }" @click="activeTab = 'env'">.env</button>
+        <button :class="['tab', { active: activeTab === 'config' }]" @click="activeTab = 'config'">config.json</button>
+        <button :class="['tab', { active: activeTab === 'env' }]" @click="activeTab = 'env'">.env</button>
       </div>
 
-      <div v-if="activeTab === 'config'" class="editor">
-        <textarea v-model="configText" rows="20" :class="{ 'has-error': configParseError }"></textarea>
+      <div v-if="activeTab === 'config'" class="editor-card">
+        <textarea v-model="configText" rows="20" :class="['config-textarea', { 'has-error': configParseError }]"></textarea>
         <p v-if="configParseError" class="parse-error">{{ configParseError }}</p>
         <div class="actions">
-          <button @click="saveConfig" :disabled="saving || !!configParseError">
+          <button @click="saveConfig" :disabled="saving || !!configParseError" class="btn btn-primary btn-sm">
             {{ saving ? 'Saving...' : 'Save Config' }}
           </button>
-          <button @click="initKeys">Init SSH Keys</button>
+          <button @click="initKeys" class="btn btn-secondary btn-sm">Init SSH Keys</button>
         </div>
       </div>
 
-      <div v-if="activeTab === 'env'" class="editor">
+      <div v-if="activeTab === 'env'" class="editor-card">
         <div class="env-list">
           <div v-for="(_value, key) in env" :key="key" class="env-item">
             <label>{{ key }}</label>
@@ -106,7 +110,9 @@ onMounted(fetchData)
           </div>
         </div>
         <div class="actions">
-          <button @click="saveEnv" :disabled="saving">{{ saving ? 'Saving...' : 'Save .env' }}</button>
+          <button @click="saveEnv" :disabled="saving" class="btn btn-primary btn-sm">
+            {{ saving ? 'Saving...' : 'Save .env' }}
+          </button>
         </div>
       </div>
     </template>
@@ -114,40 +120,19 @@ onMounted(fetchData)
 </template>
 
 <style scoped>
-.config { padding: 20px; }
-.tabs { margin-bottom: 20px; display: flex; gap: 10px; }
-.tabs button { padding: 8px 16px; border: 1px solid #d1d5db; border-radius: 6px; background: white; cursor: pointer; }
-.tabs button.active { background: #333; color: white; border-color: #333; }
-.editor textarea {
-  width: 100%;
-  font-family: monospace;
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  resize: vertical;
-  box-sizing: border-box;
-}
-.editor textarea.has-error { border-color: #ef4444; }
-.parse-error {
-  margin: 6px 0 0 0;
-  color: #ef4444;
-  font-size: 0.85em;
-  font-family: monospace;
-}
-.env-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
-.env-item { display: flex; gap: 10px; align-items: center; }
-.env-item label { min-width: 200px; font-weight: bold; }
-.env-item input { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-.actions { margin-top: 15px; display: flex; gap: 10px; }
-.actions button {
-  padding: 8px 16px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: white;
-  cursor: pointer;
-}
-.actions button:hover:not(:disabled) { background: #f3f4f6; }
-.actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-.loading, .error { padding: 20px; text-align: center; }
-.error { color: red; }
+.config-page { max-width: 900px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tab { padding: 10px 20px; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-secondary); cursor: pointer; font-size: 13px; font-weight: 500; }
+.tab:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.tab.active { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+.editor-card { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 16px; }
+.config-textarea { width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 12px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); resize: vertical; box-sizing: border-box; outline: none; }
+.config-textarea:focus { border-color: var(--accent-blue); }
+.config-textarea.has-error { border-color: #dc2626; }
+.parse-error { margin: 8px 0 0 0; color: #f87171; font-size: 12px; font-family: monospace; }
+.env-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.env-item { display: flex; gap: 12px; align-items: center; }
+.env-item label { min-width: 180px; font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+.env-item input { flex: 1; padding: 8px 12px; font-size: 13px; }
+.actions { display: flex; gap: 8px; margin-top: 16px; }
 </style>

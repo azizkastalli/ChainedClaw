@@ -51,7 +51,8 @@ for arg in "$@"; do
 done
 
 # Load configuration from .env (skip for --flush/--help)
-ENV_FILE="$SCRIPT_DIR/../../.env"
+# Use ENV_FILE from environment if set, otherwise use default path
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../../.env}"
 if [ "$FLUSH_MODE" = false ] && [ "$SHOW_HELP" = false ]; then
     if [ ! -f "$ENV_FILE" ]; then
         echo "ERROR: .env file not found at $ENV_FILE"
@@ -61,7 +62,7 @@ if [ "$FLUSH_MODE" = false ] && [ "$SHOW_HELP" = false ]; then
 fi
 
 # Use unified variables with fallbacks
-CONFIG_JSON="${SCRIPT_DIR}/../../config.json"
+CONFIG_JSON="${CONFIG_JSON:-$SCRIPT_DIR/../../config.json}"
 # NETWORK_NAME is available for future use (e.g., network-specific rules)
 # shellcheck disable=SC2034
 NETWORK_NAME="${AGENT_NETWORK_NAME:-agent-dev-net}"

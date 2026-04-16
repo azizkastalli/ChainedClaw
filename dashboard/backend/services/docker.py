@@ -23,7 +23,10 @@ class DockerService:
                 # Filter for OpenClaw-related containers
                 if name_filter and name_filter not in c.name:
                     continue
-                if not any(name in c.name for name in ['agent-', 'openclaw', 'claudecode', 'dashboard', 'nginx']):
+                # Include openclaw-related containers, exclude external nginx instances
+                if 'rucode-' in c.name:
+                    continue
+                if not any(name in c.name for name in ['agent-', 'openclaw', 'claudecode', 'dashboard', 'agent-dev-nginx']):
                     continue
                 
                 # Determine status

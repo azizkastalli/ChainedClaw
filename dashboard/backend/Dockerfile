@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     sudo \
     iptables \
     apache2-utils \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies

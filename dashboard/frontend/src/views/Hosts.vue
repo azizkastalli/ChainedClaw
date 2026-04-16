@@ -6,7 +6,6 @@ import { useToast } from '../composables/useToast'
 
 const store = useInfraStore()
 const { push } = useToast()
-
 const actionLoading = ref('')
 
 async function testHost(name: string) {
@@ -39,76 +38,71 @@ onMounted(() => store.refreshHosts())
 </script>
 
 <template>
-  <div class="hosts">
-    <h1>SSH Hosts</h1>
-    <div v-if="store.loading && store.hostsStatus.length === 0" class="loading">Loading...</div>
-    <template v-else>
-      <div class="host-list">
-        <div v-for="h in store.hostsStatus" :key="h.name" class="host-item">
-          <div class="host-info">
-            <span class="name">{{ h.name }}</span>
-            <span class="addr">{{ h.hostname }}:{{ h.port }}</span>
-            <span :class="['status', h.connected ? 'green' : 'red']">
+  <div class="hosts-page">
+    <div class="page-header">
+      <h1 class="page-title">SSH Hosts</h1>
+      <p class="page-subtitle">Manage remote host connections</p>
+    </div>
+
+    <div v-if="store.loading && store.hostsStatus.length === 0" class="loading-container">
+      <div class="spinner"></div><span>Loading...</span>
+    </div>
+
+    <div v-else class="hosts-grid">
+      <div v-for="h in store.hostsStatus" :key="h.name" class="host-card">
+        <div class="host-header">
+          <div class="host-title-row">
+            <h3 class="host-name">{{ h.name }}</h3>
+            <span :class="['badge', h.connected ? 'success' : 'danger']">
               {{ h.connected ? 'Connected' : 'Disconnected' }}
             </span>
           </div>
-          <div class="host-message">{{ h.message }}</div>
-          <div class="host-actions">
-            <button
-              @click="testHost(h.name)"
-              :disabled="actionLoading !== ''"
-              class="btn"
-            >{{ actionLoading === h.name ? 'Testing...' : 'Test' }}</button>
-            <button
-              @click="setupHost(h.name)"
-              :disabled="actionLoading !== ''"
-              class="btn"
-            >Setup</button>
-          </div>
-          <div class="host-details">
-            <span v-if="h.chroot_exists !== null && h.chroot_exists !== undefined">
-              Chroot: {{ h.chroot_exists ? '✓' : '✗' }}
+          <div class="host-addr">{{ h.hostname }}:{{ h.port }}</div>
+        </div>
+        
+        <p class="host-message">{{ h.message }}</p>
+        
+        <div class="host-details">
+          <span v-if="h.chroot_exists !== null && h.chroot_exists !== undefined" class="detail-item">
+            <span class="detail-label">Chroot</span>
+            <span :class="['detail-value', h.chroot_exists ? 'success' : 'danger']">
+              {{ h.chroot_exists ? '✓' : '✗' }}
             </span>
-            <span v-if="h.key_installed !== null && h.key_installed !== undefined">
-              Key: {{ h.key_installed ? '✓' : '✗' }}
+          </span>
+          <span v-if="h.key_installed !== null && h.key_installed !== undefined" class="detail-item">
+            <span class="detail-label">Key</span>
+            <span :class="['detail-value', h.key_installed ? 'success' : 'danger']">
+              {{ h.key_installed ? '✓' : '✗' }}
             </span>
-          </div>
+          </span>
+        </div>
+        
+        <div class="host-actions">
+          <button @click="testHost(h.name)" :disabled="actionLoading !== ''" class="btn btn-secondary btn-sm">
+            {{ actionLoading === h.name ? 'Testing...' : 'Test' }}
+          </button>
+          <button @click="setupHost(h.name)" :disabled="actionLoading !== ''" class="btn btn-primary btn-sm">
+            Setup
+          </button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.hosts { padding: 20px; }
-.host-list { display: flex; flex-direction: column; gap: 12px; }
-.host-item {
-  padding: 15px;
-  background: #f9f9f9;
-  border-radius: 4px;
-  border: 1px solid #e5e5e5;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.host-info { display: flex; gap: 15px; align-items: center; }
-.host-message { font-size: 0.85em; color: #6b7280; }
-.host-actions { display: flex; gap: 8px; }
-.host-details { font-size: 0.9em; color: #666; display: flex; gap: 15px; }
-.name { font-weight: bold; min-width: 120px; }
-.addr { min-width: 150px; color: #374151; }
-.status { min-width: 100px; font-weight: 500; }
-.green { color: #22c55e; }
-.red { color: #ef4444; }
-.btn {
-  padding: 5px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: white;
-  cursor: pointer;
-  font-size: 0.85em;
-}
-.btn:hover:not(:disabled) { background: #f3f4f6; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.loading { padding: 20px; text-align: center; }
+.hosts-page { max-width: 1000px; }
+.hosts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.host-card { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 16px; }
+.host-header { margin-bottom: 8px; }
+.host-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.host-name { font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0; }
+.host-addr { font-size: 12px; color: var(--text-secondary); }
+.host-message { font-size: 12px; color: var(--text-muted); margin: 0 0 12px 0; }
+.host-details { display: flex; gap: 16px; padding: 10px 0; border-top: 1px solid var(--border-color); margin-bottom: 12px; }
+.detail-item { display: flex; gap: 6px; font-size: 12px; }
+.detail-label { color: var(--text-secondary); }
+.detail-value.success { color: #4ade80; }
+.detail-value.danger { color: #f87171; }
+.host-actions { display: flex; gap: 6px; }
 </style>

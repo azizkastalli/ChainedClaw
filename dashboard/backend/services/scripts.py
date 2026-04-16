@@ -50,6 +50,54 @@ class ScriptService:
                 'stderr': str(e)
             }
     
+    def run_script_with_env(self, script_path: str, args: List[str] = None, env_vars: dict = None, use_sudo: bool = False) -> dict:
+        """Execute a shell script with additional environment variables."""
+        cmd = []
+        if use_sudo:
+            cmd.append('sudo')
+            # Pass env vars through sudo with -E or individually
+            if env_vars:
+                for key, value in env_vars.items():
+                    cmd.extend([f'{key}={value}'])
+        cmd.append(script_path)
+        if args:
+            cmd.extend(args)
+        
+        # Build environment with additional vars
+        env = os.environ.copy()
+        if env_vars and not use_sudo:
+            env.update(env_vars)
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=env if not use_sudo else None
+            )
+            
+            return {
+                'success': result.returncode == 0,
+                'exit_code': result.returncode,
+                'stdout': result.stdout,
+                'stderr': result.stderr
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                'success': False,
+                'exit_code': -1,
+                'stdout': '',
+                'stderr': 'Script execution timed out'
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'exit_code': -1,
+                'stdout': '',
+                'stderr': str(e)
+            }
+    
     def run_command(self, command: List[str], cwd: str = None, use_sudo: bool = False) -> dict:
         """Execute a command and return the result."""
         cmd = []
@@ -192,9 +240,16 @@ class ScriptService:
         elif mode == "block-all":
             args = ['--block-all']
         
-        return self.run_script(
+        # Set environment variables to point to the correct config paths
+        env_vars = {
+            'ENV_FILE': '/app/config/.env',
+            'CONFIG_JSON': '/app/config/config.json'
+        }
+        
+        return self.run_script_with_env(
             f'{self.scripts_dir}/firewall/setup_firewall.sh',
             args=args,
+            env_vars=env_vars,
             use_sudo=True
         )
     

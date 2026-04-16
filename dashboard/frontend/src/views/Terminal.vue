@@ -85,6 +85,11 @@ onUnmounted(() => { if (ws) ws.close(); if (term) term.dispose() })
 .dot { width: 8px; height: 8px; background: var(--border-color); }
 .status.connected .dot { background: #4ade80; }
 .error-bar { padding: 10px 16px; background: #1f1315; border-bottom: 1px solid #7f1d1d; color: #fca5a5; font-size: 12px; }
-.terminal-container { background: #0a0a0a; height: 450px; }
-:deep(.xterm) { padding: 12px; }
+.terminal-container { background: #0a0a0a; height: 450px; display: flex; }
+:deep(.xterm) { padding: 12px; width: 100%; }
+:deep(.xterm-viewport) { overflow-y: auto !important; }
+:deep(.xterm-screen) { margin: 0; padding: 0; }
+:deep(.xterm-helpers) { left: 0 !important; }
+:deep(.xterm-rows) { text-align: left !important; }
+:deep(.xterm-container) { text-align: left !important; }
 </style>
