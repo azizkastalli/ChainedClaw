@@ -20,7 +20,7 @@
 .PHONY: help uninstall config wizard keys auth build up down restart logs status \
         preflight setup chroot chroot-clean key-add key-remove sync \
         firewall firewall-flush remote-setup remote-clean test clean purge purge-data \
-        security-check
+        security-check dashboard dashboard-build dashboard-dev
 
 # Default target
 .DEFAULT_GOAL := help
@@ -103,6 +103,18 @@ ifeq ($(filter $(AGENT),openclaw claudecode),)
 	@exit 1
 endif
 	docker compose --profile $(AGENT) build
+
+dashboard-build: ## Build dashboard images (backend and frontend)
+	@echo "Building dashboard backend..."
+	docker compose --profile openclaw build dashboard
+	@echo "Dashboard images built."
+
+dashboard: ## Open dashboard in browser (requires openclaw agent running)
+	@echo "Opening dashboard at http://localhost:8090"
+	@xdg-open http://localhost:8090 2>/dev/null || open http://localhost:8090 2>/dev/null || echo "Dashboard available at http://localhost:8090"
+
+dashboard-dev: ## Run dashboard backend in development mode (local, not in Docker)
+	cd dashboard/backend && pip install -r requirements.txt && uvicorn main:app --reload --port 18790
 
 # ------------------------------------------------------------------------------
 # Container Management

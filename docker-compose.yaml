@@ -147,6 +147,28 @@ services:
         ipv4_address: 172.28.0.20
     depends_on:
       - openclaw
+      - dashboard
+    restart: unless-stopped
+
+  # ── Dashboard API ──────────────────────────────────────────────────────────────
+  # FastAPI backend for infrastructure management
+  dashboard:
+    profiles: [openclaw]
+    build:
+      context: ./dashboard/backend
+      dockerfile: Dockerfile
+    container_name: agent-dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./:/app/config:ro
+      - ./scripts:/app/scripts:ro
+      - ./.ssh:/app/ssh:ro
+    environment:
+      - CONFIG_PATH=/app/config/config.json
+      - ENV_PATH=/app/config/.env
+    networks:
+      agent-dev-net:
+        ipv4_address: 172.28.0.30
     restart: unless-stopped
 
 networks:
