@@ -41,14 +41,14 @@ async def run_preflight():
 
 
 @router.post("/firewall", response_model=SuccessResponse)
-async def setup_firewall():
-    """Apply firewall rules."""
+async def setup_firewall(mode: str = "default"):
+    """Apply firewall rules with specified mode (default, strict, block-all)."""
     try:
-        result = script_service.setup_firewall()
+        result = script_service.setup_firewall(mode=mode)
         if result['success']:
-            return SuccessResponse(message="Firewall rules applied")
+            return SuccessResponse(message=f"Firewall rules applied (mode: {mode})")
         else:
-            raise HTTPException(status_code=500, detail=result['stderr'])
+            raise HTTPException(status_code=500, detail=result.get('stderr', result.get('error', 'Unknown error')))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

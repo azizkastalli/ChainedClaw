@@ -88,6 +88,21 @@ export const dashboardApi = {
     return response.data
   },
 
+  async startContainer(name: string): Promise<{ success: boolean; message: string }> {
+    const response = await api.post(`/containers/${name}/start`)
+    return response.data
+  },
+
+  async stopContainer(name: string): Promise<{ success: boolean; message: string }> {
+    const response = await api.post(`/containers/${name}/stop`)
+    return response.data
+  },
+
+  async restartContainer(name: string): Promise<{ success: boolean; message: string }> {
+    const response = await api.post(`/containers/${name}/restart`)
+    return response.data
+  },
+
   // Security
   async getSecurityStatus(): Promise<SecurityStatus> {
     const response = await api.get('/security/status')
@@ -99,8 +114,8 @@ export const dashboardApi = {
     return response.data
   },
 
-  async setupFirewall(): Promise<{ success: boolean; message: string }> {
-    const response = await api.post('/security/firewall')
+  async setupFirewall(mode: string = 'default'): Promise<{ success: boolean; message: string }> {
+    const response = await api.post('/security/firewall', null, { params: { mode } })
     return response.data
   },
 

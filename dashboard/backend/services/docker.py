@@ -223,6 +223,48 @@ class DockerService:
         except DockerException as e:
             raise Exception(f"Docker error: {str(e)}")
     
+    def start_container(self, container_name: str) -> dict:
+        """Start a specific container."""
+        try:
+            container = self.client.containers.get(container_name)
+            container.start()
+            return {
+                'success': True,
+                'message': f'Container {container_name} started'
+            }
+        except NotFound:
+            raise Exception(f"Container {container_name} not found")
+        except DockerException as e:
+            raise Exception(f"Docker error: {str(e)}")
+    
+    def stop_container(self, container_name: str) -> dict:
+        """Stop a specific container."""
+        try:
+            container = self.client.containers.get(container_name)
+            container.stop()
+            return {
+                'success': True,
+                'message': f'Container {container_name} stopped'
+            }
+        except NotFound:
+            raise Exception(f"Container {container_name} not found")
+        except DockerException as e:
+            raise Exception(f"Docker error: {str(e)}")
+    
+    def restart_container(self, container_name: str) -> dict:
+        """Restart a specific container."""
+        try:
+            container = self.client.containers.get(container_name)
+            container.restart()
+            return {
+                'success': True,
+                'message': f'Container {container_name} restarted'
+            }
+        except NotFound:
+            raise Exception(f"Container {container_name} not found")
+        except DockerException as e:
+            raise Exception(f"Docker error: {str(e)}")
+    
     def _parse_status(self, status_str: str) -> ContainerStatus:
         """Parse Docker status string to ContainerStatus enum."""
         status_lower = status_str.lower()

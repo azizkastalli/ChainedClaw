@@ -184,10 +184,17 @@ class ScriptService:
         )
     
     # Firewall Management
-    def setup_firewall(self) -> dict:
-        """Set up firewall rules."""
+    def setup_firewall(self, mode: str = "default") -> dict:
+        """Set up firewall rules with specified mode (default, strict, block-all)."""
+        args = []
+        if mode == "strict":
+            args = ['--strict']
+        elif mode == "block-all":
+            args = ['--block-all']
+        
         return self.run_script(
             f'{self.scripts_dir}/firewall/setup_firewall.sh',
+            args=args,
             use_sudo=True
         )
     

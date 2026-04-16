@@ -87,6 +87,36 @@ async def get_logs(name: str, tail: int = 100):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{name}/start", response_model=SuccessResponse)
+async def start_container(name: str):
+    """Start a specific container."""
+    try:
+        result = docker_service.start_container(name)
+        return SuccessResponse(message=result['message'])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{name}/stop", response_model=SuccessResponse)
+async def stop_container(name: str):
+    """Stop a specific container."""
+    try:
+        result = docker_service.stop_container(name)
+        return SuccessResponse(message=result['message'])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{name}/restart", response_model=SuccessResponse)
+async def restart_container(name: str):
+    """Restart a specific container."""
+    try:
+        result = docker_service.restart_container(name)
+        return SuccessResponse(message=result['message'])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.websocket("/{name}/logs/stream")
 async def stream_logs(websocket: WebSocket, name: str):
     """Stream container logs via WebSocket."""
