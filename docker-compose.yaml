@@ -1,57 +1,141 @@
 services:
+
+  # ── OpenClaw agent ────────────────────────────────────────────────────────────
+  # Start with: make up AGENT=openclaw
+  #
+  # Security posture (openclaw is treated as LESS trusted than claudecode):
+  #   - user: root            — needed to run iptables directly (cap_drop strips SETUID/SETGID, sudo unusable)
+  #   - init-firewall.sh      — internal egress allowlist (same as claudecode)
+  #   - FORWARD chain         — SSH egress restricted to config.json hosts only
+  #   - cap_drop: ALL         — zero Linux capabilities by default
+  #   - cap_add: NET_ADMIN/NET_RAW — needed for iptables in entrypoint (root phase only)
+  #   - cap_add: SETUID/SETGID    — needed for gosu root→openclaw drop; cleared from effective set after exec
+  #   - no-new-privileges         — inherited by agent after drop; prevents capability re-gain
+  #   - seccomp profile           — blocks dangerous syscalls (mount, unshare, ptrace, bpf, etc.)
+  #   - tmpfs /tmp /run ~/.ssh    — RAM-backed, wiped on restart; chowned to openclaw before drop
+  #
+  # Note: init-firewall.sh allowlist covers npm, GitHub, Anthropic API, Sentry,
+  # Statsig. If openclaw needs additional endpoints (Telegram, custom APIs), add
+  # them to agents/init-firewall.sh or extend via EXTRA_ALLOWED_DOMAINS (future).
   openclaw:
-    image: ghcr.io/openclaw/openclaw:latest
-    container_name: openclaw
-    runtime: sysbox-runc        # Secure nested containers — DinD without privileged mode.
-                                # Sysbox maps container root to an unprivileged host UID via
-                                # Linux user namespaces. Inner containers cannot escape to the
-                                # host kernel or host Docker daemon even if fully compromised.
-                                # Prerequisite: install Sysbox on the host (see README).
-    # user: "1000:1000"         # Removed: Sysbox manages UID remapping internally.
-                                # Container root → unprivileged host UID (e.g. 165536).
-    # read_only: true           # Removed: inner Docker daemon needs a writable /var/lib/docker.
-                                # Docker writes are scoped to the openclaw-docker named volume.
-    # cap_drop: ALL             # Removed: Sysbox requires standard caps for its user-namespace
-                                # machinery. Security boundary is the Sysbox runtime, not cap_drop.
+    profiles: [openclaw]
+    build:
+      context: ./agents
+      dockerfile: openclaw/Dockerfile
+    container_name: agent-dev
+    user: root
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SETUID
+      - SETGID
+      - CHOWN
     security_opt:
       - no-new-privileges:true
+      - seccomp:./security/seccomp-agent.json
     tmpfs:
       - /tmp
       - /run
+      - /home/openclaw/.ssh
     environment:
       - APP_HOME=/home/openclaw
       - HOME=/home/openclaw
       - OPENCLAW_GATEWAY_BIND=0.0.0.0
       - NPM_CONFIG_CACHE=/home/openclaw/.openclaw/npm-cache
+      - AGENT_USER=openclaw
+      - AGENT_CMD=openclaw gateway run --allow-unconfigured
     volumes:
-      - openclaw-docker:/var/lib/docker   # Inner Docker image/layer storage (isolated, named volume)
       - type: bind
         source: ./.openclaw-data
         target: /home/openclaw/.openclaw
       - type: bind
         source: ./.ssh
-        target: /home/openclaw/.ssh
-        read_only: true         # Agent uses keys, never writes them (prevents key tampering)
-      - type: bind
-        source: ./.ssh
-        target: /home/node/.ssh
-        read_only: true         # Same key dir mounted for node user — also read-only
+        target: /home/openclaw/.ssh-keys
+        read_only: true
       - ./config.json:/config.json:ro
       - ./scripts/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/bash", "/entrypoint.sh"]
     networks:
-      openclaw-net:
+      agent-dev-net:
         ipv4_address: 172.28.0.10
     deploy:
       resources:
         limits:
-          cpus: '2.0'           # Prevent CPU exhaustion (crypto mining, inference loops)
-          memory: 2g            # 2 GB covers agent + inner Docker daemon + browser container
+          cpus: '2.0'
+          memory: 2g
     restart: unless-stopped
 
+  # ── Claude Code agent ─────────────────────────────────────────────────────────
+  # Start with: make up AGENT=claudecode
+  #
+  # Security posture (claudecode is more trusted — first-party Anthropic tool):
+  #   - init-firewall.sh      — same internal egress allowlist as openclaw
+  #   - FORWARD chain         — SSH egress restricted to config.json hosts only
+  #   - user: root (entrypoint) → node (agent) — root for iptables, gosu drops to node before exec
+  #   - cap_drop: ALL         — zero Linux capabilities by default
+  #   - cap_add: NET_ADMIN/NET_RAW — needed for iptables in entrypoint (root phase only)
+  #   - cap_add: SETUID/SETGID    — needed for gosu root→node drop; cleared from effective set after exec
+  #   - no-new-privileges         — inherited by agent after drop; prevents capability re-gain
+  #   - no read_only              — claude needs to write to its config and workspace dirs inside container
+  #   - seccomp profile           — blocks dangerous syscalls (mount, unshare, ptrace, bpf, etc.)
+  claudecode:
+    profiles: [claudecode]
+    build:
+      context: ./agents
+      dockerfile: claudecode/Dockerfile
+    container_name: agent-dev
+    user: root
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SETUID
+      - SETGID
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./security/seccomp-agent.json
+    tmpfs:
+      - /tmp
+      - /run
+      - /home/node/.ssh
+    environment:
+      - HOME=/home/node
+      - CLAUDE_CONFIG_DIR=/home/node/.claude
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - AGENT_USER=node
+      - AGENT_CMD=claude --auto-approve
+    volumes:
+      - type: bind
+        source: ./.claudecode-data
+        target: /home/node/.claude
+      - type: bind
+        source: ./.ssh
+        target: /home/node/.ssh-keys
+        read_only: true
+      - ./config.json:/config.json:ro
+      - ./scripts/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    networks:
+      agent-dev-net:
+        ipv4_address: 172.28.0.10
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4g
+    restart: unless-stopped
+
+  # ── nginx dashboard ───────────────────────────────────────────────────────────
+  # Only started with AGENT=openclaw (openclaw exposes a web gateway).
+  # claudecode is CLI-only — no dashboard.
   nginx:
+    profiles: [openclaw]
     image: nginx:1.29.8
-    container_name: openclaw-nginx
+    container_name: agent-dev-nginx
     ports:
       - "127.0.0.1:${NGINX_HTTP_PORT:-8090}:80"
     volumes:
@@ -59,14 +143,14 @@ services:
       - ./nginx/html:/etc/nginx/html:ro
       - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
     networks:
-      openclaw-net:
+      agent-dev-net:
         ipv4_address: 172.28.0.20
     depends_on:
       - openclaw
     restart: unless-stopped
 
 networks:
-  openclaw-net:
+  agent-dev-net:
     driver: bridge
     enable_ipv6: false
     ipam:
@@ -74,6 +158,3 @@ networks:
       config:
         - subnet: 172.28.0.0/24
           gateway: 172.28.0.1
-
-volumes:
-  openclaw-docker: {}           # Persistent inner Docker image cache — survives container restarts
