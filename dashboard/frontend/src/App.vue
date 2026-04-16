@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 const route = useRoute()
 const sidebarCollapsed = ref(false)
+const isDarkMode = ref(true)
 
 const navItems = [
   { path: '/', icon: '📊', label: 'Overview' },
@@ -18,6 +19,24 @@ const navItems = [
 function isActive(path: string): boolean {
   return route.path === path
 }
+
+function toggleTheme() {
+  isDarkMode.value = !isDarkMode.value
+  localStorage.setItem('theme', isDarkMode.value ? 'dark' : 'light')
+  applyTheme()
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', isDarkMode.value ? 'dark' : 'light')
+}
+
+onMounted(() => {
+  const saved = localStorage.getItem('theme')
+  if (saved) {
+    isDarkMode.value = saved === 'dark'
+  }
+  applyTheme()
+})
 </script>
 
 <template>
@@ -26,7 +45,6 @@ function isActive(path: string): boolean {
     <aside :class="['sidebar', { collapsed: sidebarCollapsed }]">
       <div class="sidebar-header">
         <div class="logo">
-          <span class="logo-icon">🦀</span>
           <span v-if="!sidebarCollapsed" class="logo-text">Agent Manager</span>
         </div>
         <button class="collapse-btn" @click="sidebarCollapsed = !sidebarCollapsed">
@@ -47,6 +65,9 @@ function isActive(path: string): boolean {
       </nav>
       
       <div class="sidebar-footer">
+        <button v-if="!sidebarCollapsed" @click="toggleTheme" class="theme-toggle">
+          {{ isDarkMode ? '☀️ Light' : '🌙 Dark' }}
+        </button>
         <span v-if="!sidebarCollapsed" class="version">v1.0.0</span>
       </div>
     </aside>
@@ -59,6 +80,34 @@ function isActive(path: string): boolean {
 </template>
 
 <style>
+/* Dark Theme (default) */
+:root, [data-theme="dark"] {
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #252525;
+  --border-color: #2a2a2a;
+  --text-primary: #e5e5e5;
+  --text-secondary: #888;
+  --text-muted: #666;
+  --accent-blue: #2563eb;
+  --accent-green: #16a34a;
+  --accent-red: #dc2626;
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e5e5e5;
+  --border-color: #d4d4d4;
+  --text-primary: #1a1a1a;
+  --text-secondary: #525252;
+  --text-muted: #737373;
+  --accent-blue: #2563eb;
+  --accent-green: #16a34a;
+  --accent-red: #dc2626;
+}
+
 /* Global Styles */
 * {
   margin: 0;
@@ -68,8 +117,8 @@ function isActive(path: string): boolean {
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0f0f0f;
-  color: #e5e5e5;
+  background: var(--bg-primary);
+  color: var(--text-primary);
   line-height: 1.6;
 }
 
@@ -82,8 +131,8 @@ body {
 /* Sidebar */
 .sidebar {
   width: 220px;
-  background: #1a1a1a;
-  color: #e5e5e5;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
   transition: width 0.2s ease;
@@ -92,7 +141,7 @@ body {
   top: 0;
   bottom: 0;
   z-index: 100;
-  border-right: 1px solid #2a2a2a;
+  border-right: 1px solid var(--border-color);
 }
 
 .sidebar.collapsed {
@@ -101,7 +150,7 @@ body {
 
 .sidebar-header {
   padding: 16px;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -113,20 +162,16 @@ body {
   gap: 10px;
 }
 
-.logo-icon {
-  font-size: 22px;
-}
-
 .logo-text {
   font-size: 15px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 .collapse-btn {
-  background: #2a2a2a;
+  background: var(--bg-tertiary);
   border: none;
-  color: #888;
+  color: var(--text-secondary);
   width: 24px;
   height: 24px;
   display: flex;
@@ -137,8 +182,8 @@ body {
 }
 
 .collapse-btn:hover {
-  background: #3a3a3a;
-  color: #fff;
+  background: var(--border-color);
+  color: var(--text-primary);
 }
 
 .sidebar-nav {
@@ -154,7 +199,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  color: #888;
+  color: var(--text-secondary);
   text-decoration: none;
   transition: all 0.15s ease;
   font-weight: 500;
@@ -162,12 +207,12 @@ body {
 }
 
 .nav-item:hover {
-  background: #252525;
-  color: #e5e5e5;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .nav-item.active {
-  background: #2563eb;
+  background: var(--accent-blue);
   color: #ffffff;
 }
 
@@ -179,11 +224,28 @@ body {
 
 .sidebar-footer {
   padding: 12px 16px;
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.theme-toggle {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.theme-toggle:hover {
+  background: var(--border-color);
 }
 
 .version {
-  color: #555;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -194,7 +256,7 @@ body {
   padding: 20px;
   min-height: 100vh;
   transition: margin-left 0.2s ease;
-  background: #0f0f0f;
+  background: var(--bg-primary);
 }
 
 .sidebar.collapsed + .main-content {
@@ -209,19 +271,19 @@ body {
 .page-title {
   font-size: 22px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
 .page-subtitle {
-  color: #666;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
 /* Card Styles */
 .card {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   padding: 20px;
   margin-bottom: 16px;
 }
@@ -236,7 +298,7 @@ body {
 .card-title {
   font-size: 15px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 /* Button Styles */
@@ -254,7 +316,7 @@ body {
 }
 
 .btn-primary {
-  background: #2563eb;
+  background: var(--accent-blue);
   color: #ffffff;
 }
 
@@ -263,7 +325,7 @@ body {
 }
 
 .btn-success {
-  background: #16a34a;
+  background: var(--accent-green);
   color: #ffffff;
 }
 
@@ -272,7 +334,7 @@ body {
 }
 
 .btn-danger {
-  background: #dc2626;
+  background: var(--accent-red);
   color: #ffffff;
 }
 
@@ -281,13 +343,13 @@ body {
 }
 
 .btn-secondary {
-  background: #374151;
-  color: #e5e5e5;
-  border: 1px solid #4b5563;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #4b5563;
+  background: var(--border-color);
 }
 
 .btn:disabled {
@@ -338,14 +400,14 @@ body {
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 .spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid #2a2a2a;
-  border-top-color: #2563eb;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-blue);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 12px;
@@ -371,7 +433,8 @@ body {
   
   .sidebar .logo-text,
   .sidebar .nav-label,
-  .sidebar .version {
+  .sidebar .version,
+  .sidebar .theme-toggle {
     display: none;
   }
   
@@ -382,25 +445,25 @@ body {
 
 /* Input Styles */
 input, select {
-  background: #1a1a1a;
-  border: 1px solid #3a3a3a;
-  color: #e5e5e5;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
   padding: 8px 12px;
   font-size: 13px;
   outline: none;
 }
 
 input:focus, select:focus {
-  border-color: #2563eb;
+  border-color: var(--accent-blue);
 }
 
 input::placeholder {
-  color: #666;
+  color: var(--text-muted);
 }
 
 input:disabled {
-  background: #252525;
-  color: #666;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
 }
 
 /* Table Styles */
@@ -412,22 +475,22 @@ table {
 th, td {
   padding: 10px 12px;
   text-align: left;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--border-color);
 }
 
 th {
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 12px;
   text-transform: uppercase;
 }
 
 td {
-  color: #e5e5e5;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
 tr:hover {
-  background: #1f1f1f;
+  background: var(--bg-tertiary);
 }
 </style>

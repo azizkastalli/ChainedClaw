@@ -165,8 +165,8 @@ onMounted(fetchData)
 }
 
 .stat-card {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   padding: 16px;
   display: flex;
   align-items: center;
@@ -180,8 +180,8 @@ onMounted(fetchData)
   align-items: center;
   justify-content: center;
   font-size: 20px;
-  background: #252525;
-  border: 1px solid #3a3a3a;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
 }
 
 .stat-icon.security { background: #1e3a5f; border-color: #2563eb; }
@@ -196,7 +196,7 @@ onMounted(fetchData)
 
 .stat-label {
   font-size: 12px;
-  color: #888;
+  color: var(--text-secondary);
   margin-bottom: 2px;
   text-transform: uppercase;
 }
@@ -220,13 +220,13 @@ onMounted(fetchData)
 }
 
 .container-item {
-  background: #0f0f0f;
-  border: 1px solid #2a2a2a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   padding: 12px;
 }
 
 .container-item:hover {
-  border-color: #3a3a3a;
+  border-color: var(--text-muted);
 }
 
 .container-info {
@@ -238,13 +238,13 @@ onMounted(fetchData)
 
 .container-name {
   font-weight: 500;
-  color: #e5e5e5;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
 .container-image {
   font-size: 11px;
-  color: #666;
+  color: var(--text-muted);
 }
 
 /* Quick Actions */
@@ -259,18 +259,18 @@ onMounted(fetchData)
   align-items: center;
   gap: 10px;
   padding: 14px;
-  background: #0f0f0f;
-  border: 1px solid #2a2a2a;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   text-decoration: none;
-  color: #e5e5e5;
+  color: var(--text-primary);
   font-weight: 500;
   font-size: 13px;
   transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: #1a1a1a;
-  border-color: #2563eb;
+  background: var(--bg-secondary);
+  border-color: var(--accent-blue);
   color: #60a5fa;
 }
 
