@@ -130,3 +130,61 @@ async def stream_logs(websocket: WebSocket, name: str):
         await websocket.send_text(f"Error: {str(e)}")
     finally:
         await websocket.close()
+
+
+@router.websocket("/{name}/shell")
+async def container_shell(websocket: WebSocket, name: str):
+    """Interactive shell via WebSocket using docker exec."""
+    import docker
+    import docker.errors
+    import asyncio
+    
+    await websocket.accept()
+    
+    try:
+        client = docker.from_env()
+        container = client.containers.get(name)
+        
+        # Send welcome message
+        await websocket.send_text(f"\r\nConnected to {name}\r\n")
+        await websocket.send_text(f"Type 'exit' to disconnect\r\n\r\n")
+        
+        # Simple command execution loop
+        while True:
+            try:
+                # Show prompt
+                await websocket.send_text("$ ")
+                
+                # Wait for command
+                cmd = await websocket.receive_text()
+                
+                if cmd.strip().lower() == 'exit':
+                    await websocket.send_text("\r\nDisconnected.\r\n")
+                    break
+                
+                if not cmd.strip():
+                    continue
+                
+                # Execute command
+                result = docker_service.exec_in_container(name, ["/bin/bash", "-c", cmd])
+                
+                if result['success']:
+                    output = result['output']
+                    if output:
+                        await websocket.send_text(output)
+                        if not output.endswith('\n'):
+                            await websocket.send_text("\r\n")
+                else:
+                    await websocket.send_text(f"Error: {result['output']}\r\n")
+                    
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                await websocket.send_text(f"Error: {str(e)}\r\n")
+                
+    except docker.errors.NotFound:
+        await websocket.send_text(f"Error: Container '{name}' not found\r\n")
+    except Exception as e:
+        await websocket.send_text(f"Error: {str(e)}\r\n")
+    finally:
+        await websocket.close()
