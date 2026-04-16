@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
+import os
+import time
 
 from routers import (
     containers_router,
@@ -37,21 +39,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS for frontend access
+# Configure CORS for frontend access — origins can be overridden via CORS_ORIGINS env var
+_cors_origins_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:8090,http://127.0.0.1:8090,"
+    "http://localhost:18789,http://127.0.0.1:18789,"
+    "http://localhost:18790,http://127.0.0.1:18790"
+)
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8090",
-        "http://127.0.0.1:8090",
-        "http://localhost:18789",
-        "http://127.0.0.1:18789",
-        "http://localhost:18790",
-        "http://127.0.0.1:18790",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# TTL cache for the status endpoint (8 s avoids hammering subprocesses on every poll)
+_status_cache: dict = {}
+_STATUS_TTL = 8  # seconds
 
 # Include routers
 app.include_router(containers_router, prefix="/api")
@@ -82,11 +89,16 @@ async def health():
 # Overall status endpoint
 @app.get("/api/status")
 async def get_overall_status():
-    """Get overall infrastructure status."""
+    """Get overall infrastructure status with TTL caching and parallel SSH checks."""
+    now = time.monotonic()
+    if _status_cache.get('ts', 0) + _STATUS_TTL > now:
+        return _status_cache['data']
+
     status_service = StatusService()
     try:
-        status = status_service.get_overall_status()
-        return status
+        data = await status_service.get_overall_status_async()
+        _status_cache.update({'ts': now, 'data': data})
+        return data
     except Exception as e:
         return {
             "security": "unknown",

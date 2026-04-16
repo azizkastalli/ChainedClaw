@@ -1,19 +1,27 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { dashboardApi } from '../api/client'
+import { dashboardApi, type AppConfig } from '../api/client'
+import { useToast } from '../composables/useToast'
 
-const config = ref<Record<string, any>>({})
+const { push } = useToast()
+
+const config = ref<AppConfig>({ allowed_domains: [], ssh_hosts: [] })
 const env = ref<Record<string, string>>({})
 const loading = ref(true)
 const error = ref('')
 const saving = ref(false)
 const activeTab = ref('config')
+const configParseError = ref('')
 
-// Computed property for config text
 const configText = computed({
   get: () => JSON.stringify(config.value, null, 2),
   set: (val: string) => {
-    try { config.value = JSON.parse(val) } catch (e) { /* ignore parse errors while typing */ }
+    try {
+      config.value = JSON.parse(val) as AppConfig
+      configParseError.value = ''
+    } catch (e) {
+      configParseError.value = (e as Error).message
+    }
   }
 })
 
@@ -36,9 +44,9 @@ async function saveConfig() {
   saving.value = true
   try {
     await dashboardApi.updateConfig(config.value)
-    alert('Config saved!')
+    push('Config saved successfully', 'success')
   } catch (e: any) {
-    error.value = e.message
+    push(e.message || 'Failed to save config', 'error')
   } finally {
     saving.value = false
   }
@@ -48,9 +56,9 @@ async function saveEnv() {
   saving.value = true
   try {
     await dashboardApi.updateEnv(env.value)
-    alert('Environment saved!')
+    push('Environment saved successfully', 'success')
   } catch (e: any) {
-    error.value = e.message
+    push(e.message || 'Failed to save environment', 'error')
   } finally {
     saving.value = false
   }
@@ -59,9 +67,9 @@ async function saveEnv() {
 async function initKeys() {
   try {
     await dashboardApi.initKeys()
-    alert('SSH keys initialized!')
+    push('SSH keys initialized', 'success')
   } catch (e: any) {
-    error.value = e.message
+    push(e.message || 'Failed to initialize SSH keys', 'error')
   }
 }
 
@@ -80,9 +88,12 @@ onMounted(fetchData)
       </div>
 
       <div v-if="activeTab === 'config'" class="editor">
-        <textarea v-model="configText" rows="20"></textarea>
+        <textarea v-model="configText" rows="20" :class="{ 'has-error': configParseError }"></textarea>
+        <p v-if="configParseError" class="parse-error">{{ configParseError }}</p>
         <div class="actions">
-          <button @click="saveConfig" :disabled="saving">{{ saving ? 'Saving...' : 'Save Config' }}</button>
+          <button @click="saveConfig" :disabled="saving || !!configParseError">
+            {{ saving ? 'Saving...' : 'Save Config' }}
+          </button>
           <button @click="initKeys">Init SSH Keys</button>
         </div>
       </div>
@@ -105,13 +116,38 @@ onMounted(fetchData)
 <style scoped>
 .config { padding: 20px; }
 .tabs { margin-bottom: 20px; display: flex; gap: 10px; }
-.tabs button.active { background: #333; color: white; }
-.editor textarea { width: 100%; font-family: monospace; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+.tabs button { padding: 8px 16px; border: 1px solid #d1d5db; border-radius: 6px; background: white; cursor: pointer; }
+.tabs button.active { background: #333; color: white; border-color: #333; }
+.editor textarea {
+  width: 100%;
+  font-family: monospace;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.editor textarea.has-error { border-color: #ef4444; }
+.parse-error {
+  margin: 6px 0 0 0;
+  color: #ef4444;
+  font-size: 0.85em;
+  font-family: monospace;
+}
 .env-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
 .env-item { display: flex; gap: 10px; align-items: center; }
 .env-item label { min-width: 200px; font-weight: bold; }
 .env-item input { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
 .actions { margin-top: 15px; display: flex; gap: 10px; }
+.actions button {
+  padding: 8px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+}
+.actions button:hover:not(:disabled) { background: #f3f4f6; }
+.actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .loading, .error { padding: 20px; text-align: center; }
 .error { color: red; }
 </style>

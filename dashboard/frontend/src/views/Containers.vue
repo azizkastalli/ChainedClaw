@@ -42,7 +42,6 @@ async function restartContainers() {
   finally { actionLoading.value = '' }
 }
 
-// Individual container actions
 async function startContainer(name: string) {
   actionLoading.value = `start-${name}`
   try { await dashboardApi.startContainer(name); await fetchContainers() }
@@ -85,8 +84,8 @@ function closeLogs() {
   logs.value = ''
 }
 
-function getStatusColor(s: string): string {
-  return s === 'running' ? 'green' : s === 'stopped' || s === 'exited' ? 'red' : 'gray'
+function getStatusClass(s: string): string {
+  return s === 'running' ? 'success' : 'danger'
 }
 
 function isRunning(c: Container): boolean {
@@ -101,60 +100,92 @@ onMounted(fetchContainers)
 </script>
 
 <template>
-  <div class="containers">
-    <h1>Containers</h1>
-    <div v-if="loading" class="loading">Loading...</div>
-    <div v-else-if="error" class="error">{{ error }}</div>
-    <template v-else>
-      <div class="actions">
-        <button @click="startContainers" :disabled="actionLoading !== ''">Start All</button>
-        <button @click="stopContainers" :disabled="actionLoading !== ''">Stop All</button>
-        <button @click="restartContainers" :disabled="actionLoading !== ''">Restart All</button>
+  <div class="containers-page">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Containers</h1>
+        <p class="page-subtitle">Manage your OpenClaw containers</p>
       </div>
-      <div class="container-list">
-        <div v-for="c in containers" :key="c.name" class="container-item">
-          <div class="container-row">
-            <span class="name">{{ c.name }}</span>
-            <span :class="['status', getStatusColor(c.status)]">{{ c.status }}</span>
-            <span class="image">{{ c.image }}</span>
-            <span v-if="c.health" :class="['health', c.health]">{{ c.health }}</span>
+      <div class="header-actions">
+        <button @click="startContainers" :disabled="actionLoading !== ''" class="btn btn-success btn-sm">
+          ▶ Start All
+        </button>
+        <button @click="stopContainers" :disabled="actionLoading !== ''" class="btn btn-danger btn-sm">
+          ■ Stop All
+        </button>
+        <button @click="restartContainers" :disabled="actionLoading !== ''" class="btn btn-secondary btn-sm">
+          ↻ Restart All
+        </button>
+      </div>
+    </div>
+
+    <div v-if="loading" class="loading-container">
+      <div class="spinner"></div>
+      <span>Loading containers...</span>
+    </div>
+
+    <div v-else-if="error" class="error-message">{{ error }}</div>
+
+    <div v-else class="containers-grid">
+      <div v-for="c in containers" :key="c.name" class="container-card">
+        <div class="container-header">
+          <div class="container-title-row">
+            <h3 class="container-name">{{ c.name }}</h3>
+            <span :class="['badge', getStatusClass(c.status)]">
+              {{ c.status }}
+            </span>
           </div>
-          <div class="container-actions">
-            <button 
-              v-if="isStopped(c)" 
-              @click="startContainer(c.name)" 
-              :disabled="actionLoading !== ''"
-              class="btn-small btn-start"
-            >Start</button>
-            <button 
-              v-if="isRunning(c)" 
-              @click="stopContainer(c.name)" 
-              :disabled="actionLoading !== ''"
-              class="btn-small btn-stop"
-            >Stop</button>
-            <button 
-              @click="restartContainer(c.name)" 
-              :disabled="actionLoading !== '' || isStopped(c)"
-              class="btn-small btn-restart"
-            >Restart</button>
-            <button 
-              @click="viewLogs(c.name)" 
-              class="btn-small btn-logs"
-            >Logs</button>
+          <div class="container-meta">
+            <span class="meta-item">
+              <span class="meta-icon">📦</span>
+              {{ c.image }}
+            </span>
+          </div>
+          <div v-if="c.health" class="health-status">
+            <span :class="['health-badge', c.health]">
+              {{ c.health }}
+            </span>
           </div>
         </div>
+        
+        <div class="container-actions">
+          <button 
+            v-if="isStopped(c)" 
+            @click="startContainer(c.name)" 
+            :disabled="actionLoading !== ''"
+            class="btn btn-success btn-sm"
+          >▶ Start</button>
+          <button 
+            v-if="isRunning(c)" 
+            @click="stopContainer(c.name)" 
+            :disabled="actionLoading !== ''"
+            class="btn btn-danger btn-sm"
+          >■ Stop</button>
+          <button 
+            @click="restartContainer(c.name)" 
+            :disabled="actionLoading !== '' || isStopped(c)"
+            class="btn btn-secondary btn-sm"
+          >↻ Restart</button>
+          <button 
+            @click="viewLogs(c.name)" 
+            class="btn btn-secondary btn-sm"
+          >📋 Logs</button>
+        </div>
       </div>
-    </template>
+    </div>
 
     <!-- Logs Modal -->
     <div v-if="showLogs" class="modal-overlay" @click.self="closeLogs">
       <div class="modal">
         <div class="modal-header">
-          <h2>Logs: {{ selectedContainer }}</h2>
-          <button @click="closeLogs" class="btn-close">&times;</button>
+          <h2>📋 Logs: {{ selectedContainer }}</h2>
+          <button @click="closeLogs" class="modal-close">&times;</button>
         </div>
         <div class="modal-body">
-          <div v-if="logsLoading" class="loading">Loading logs...</div>
+          <div v-if="logsLoading" class="loading-container">
+            <div class="spinner"></div>
+            <span>Loading logs...</span>
+          </div>
           <pre v-else class="logs-output">{{ logs || 'No logs available' }}</pre>
         </div>
       </div>
@@ -163,91 +194,188 @@ onMounted(fetchContainers)
 </template>
 
 <style scoped>
-.containers { padding: 20px; }
-.actions { margin-bottom: 20px; display: flex; gap: 10px; }
-.container-list { display: flex; flex-direction: column; gap: 8px; }
-.container-item { 
-  display: flex; 
-  flex-direction: column;
-  gap: 10px; 
-  padding: 15px; 
-  background: #f9f9f9; 
-  border-radius: 4px; 
-  border: 1px solid #e5e5e5;
+.containers-page {
+  max-width: 1200px;
 }
-.container-row { display: flex; gap: 15px; align-items: center; }
-.name { font-weight: bold; min-width: 180px; }
-.status { min-width: 100px; font-weight: 500; }
-.image { color: #666; font-size: 0.9em; flex: 1; }
-.health { padding: 2px 8px; border-radius: 3px; font-size: 0.8em; }
-.health.healthy { background: #dcfce7; color: #166534; }
-.health.unhealthy { background: #fee2e2; color: #991b1b; }
-.health.starting { background: #fef3c7; color: #92400e; }
-.container-actions { display: flex; gap: 8px; }
-.btn-small { 
-  padding: 4px 12px; 
-  font-size: 0.85em; 
-  border: 1px solid #ddd; 
-  background: white; 
-  border-radius: 4px; 
-  cursor: pointer;
-}
-.btn-small:hover:not(:disabled) { background: #f0f0f0; }
-.btn-small:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-start { border-color: #22c55e; color: #22c55e; }
-.btn-stop { border-color: #ef4444; color: #ef4444; }
-.btn-restart { border-color: #f97316; color: #f97316; }
-.btn-logs { border-color: #3b82f6; color: #3b82f6; }
-.green { color: #22c55e; }
-.red { color: #ef4444; }
-.gray { color: #6b7280; }
-.loading, .error { padding: 20px; text-align: center; }
-.error { color: red; }
 
-/* Modal styles */
-.modal-overlay { 
-  position: fixed; 
-  top: 0; left: 0; right: 0; bottom: 0; 
-  background: rgba(0,0,0,0.5); 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  z-index: 1000; 
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
 }
-.modal { 
-  background: white; 
-  border-radius: 8px; 
-  width: 90%; 
-  max-width: 900px; 
-  max-height: 80vh; 
-  display: flex; 
-  flex-direction: column; 
+
+.header-actions {
+  display: flex;
+  gap: 8px;
 }
-.modal-header { 
-  display: flex; 
-  justify-content: space-between; 
-  align-items: center; 
-  padding: 15px 20px; 
-  border-bottom: 1px solid #e5e5e5; 
+
+/* Containers Grid */
+.containers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
 }
-.modal-header h2 { margin: 0; font-size: 1.2em; }
-.btn-close { 
-  background: none; 
-  border: none; 
-  font-size: 1.5em; 
-  cursor: pointer; 
-  color: #666; 
+
+.container-card {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
 }
-.modal-body { padding: 20px; overflow: auto; flex: 1; }
-.logs-output { 
-  background: #1e1e1e; 
-  color: #d4d4d4; 
-  padding: 15px; 
-  border-radius: 4px; 
-  font-family: monospace; 
-  font-size: 12px; 
-  white-space: pre-wrap; 
-  max-height: 500px; 
-  overflow: auto; 
+
+.container-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.container-header {
+  padding: 20px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.container-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.container-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.container-meta {
+  display: flex;
+  gap: 16px;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.meta-icon {
+  font-size: 14px;
+}
+
+.health-status {
+  margin-top: 12px;
+}
+
+.health-badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.health-badge.healthy {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.health-badge.unhealthy {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.health-badge.starting {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.container-actions {
+  padding: 16px 20px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #f9fafb;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal {
+  background: white;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 900px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.modal-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.modal-close {
+  background: #f3f4f6;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #6b7280;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.modal-close:hover {
+  background: #e5e7eb;
+  color: #1f2937;
+}
+
+.modal-body {
+  padding: 24px;
+  overflow: auto;
+  flex: 1;
+}
+
+.logs-output {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 20px;
+  border-radius: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 500px;
+  overflow: auto;
 }
 </style>

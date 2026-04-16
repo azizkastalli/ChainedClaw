@@ -40,6 +40,25 @@ export interface SSHHostStatus {
   key_installed?: boolean
 }
 
+export interface SSHHost {
+  name: string
+  hostname: string
+  port: number
+  user: string
+  strict_host_key_checking?: boolean
+  isolation?: string
+  chroot_egress_filter?: boolean
+  docker_access?: boolean
+  project_paths?: string[]
+  forward_ports?: number[]
+}
+
+export interface AppConfig {
+  allowed_domains: string[]
+  ssh_hosts: SSHHost[]
+  [key: string]: unknown
+}
+
 export interface OverallStatus {
   security: string
   containers_running: boolean
@@ -125,7 +144,7 @@ export const dashboardApi = {
   },
 
   // Hosts
-  async getHosts(): Promise<any[]> {
+  async getHosts(): Promise<SSHHost[]> {
     const response = await api.get('/hosts')
     return response.data
   },
@@ -166,12 +185,12 @@ export const dashboardApi = {
   },
 
   // Config
-  async getConfig(): Promise<any> {
+  async getConfig(): Promise<AppConfig> {
     const response = await api.get('/config')
     return response.data
   },
 
-  async updateConfig(config: any): Promise<{ success: boolean; message: string }> {
+  async updateConfig(config: AppConfig): Promise<{ success: boolean; message: string }> {
     const response = await api.put('/config', { config })
     return response.data
   },
@@ -197,7 +216,7 @@ export const dashboardApi = {
   },
 
   async resetAuth(password: string): Promise<{ success: boolean; message: string }> {
-    const response = await api.post('/config/auth/reset', null, { params: { password } })
+    const response = await api.post('/config/auth/reset', { password })
     return response.data
   },
 

@@ -4,6 +4,8 @@ Service for checking infrastructure status.
 import subprocess
 import os
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 
 
@@ -308,18 +310,32 @@ class StatusService:
         }
     
     def get_all_hosts_status(self) -> List[dict]:
-        """Get status for all configured hosts."""
+        """Get status for all configured hosts (sequential, for direct calls)."""
         hosts = self.get_ssh_hosts()
         return [self.get_host_status(h) for h in hosts]
-    
-    def get_overall_status(self) -> dict:
-        """Get overall infrastructure status."""
-        security = self.get_security_status()
-        hosts = self.get_all_hosts_status()
-        
-        # Count connected hosts
+
+    async def get_all_hosts_status_async(self) -> List[dict]:
+        """Get status for all configured hosts concurrently."""
+        hosts = self.get_ssh_hosts()
+        if not hosts:
+            return []
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=min(len(hosts), 10)) as pool:
+            results = await asyncio.gather(
+                *[loop.run_in_executor(pool, self.get_host_status, h) for h in hosts]
+            )
+        return list(results)
+
+    async def get_overall_status_async(self) -> dict:
+        """Get overall infrastructure status with parallel SSH checks."""
+        loop = asyncio.get_event_loop()
+        # Run security checks and host checks concurrently
+        security_future = loop.run_in_executor(None, self.get_security_status)
+        hosts_future = self.get_all_hosts_status_async()
+        security, hosts = await asyncio.gather(security_future, hosts_future)
+
         connected_count = sum(1 for h in hosts if h['connected'])
-        
+
         return {
             'security': security['overall'],
             'containers_running': security['container']['status'] == 'ok',

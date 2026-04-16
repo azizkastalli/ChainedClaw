@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import ConfigUpdate, EnvUpdate, SuccessResponse
+from models import ConfigUpdate, EnvUpdate, AuthReset, SuccessResponse
 from services import ScriptService
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -137,10 +137,10 @@ async def get_auth_status():
 
 
 @router.post("/auth/reset", response_model=SuccessResponse)
-async def reset_auth(password: str):
+async def reset_auth(body: AuthReset):
     """Reset dashboard password."""
     try:
-        result = script_service.reset_auth(password)
+        result = script_service.reset_auth(body.password)
         if result['success']:
             return SuccessResponse(message="Password reset successfully")
         else:

@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List
 import sys
 import os
+import json as _json
+import re
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -117,10 +119,17 @@ async def restart_container(name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_CONTAINER_NAME_RE = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$')
+
+
 @router.websocket("/{name}/logs/stream")
 async def stream_logs(websocket: WebSocket, name: str):
     """Stream container logs via WebSocket."""
     await websocket.accept()
+    if not _CONTAINER_NAME_RE.match(name):
+        await websocket.send_text("Error: Invalid container name\r\n")
+        await websocket.close(code=1008)
+        return
     try:
         for line in docker_service.stream_logs(name):
             await websocket.send_text(line)
@@ -140,7 +149,12 @@ async def container_shell(websocket: WebSocket, name: str):
     import asyncio
     
     await websocket.accept()
-    
+
+    if not _CONTAINER_NAME_RE.match(name):
+        await websocket.send_text("Error: Invalid container name\r\n")
+        await websocket.close(code=1008)
+        return
+
     try:
         client = docker.from_env()
         container = client.containers.get(name)
@@ -157,11 +171,19 @@ async def container_shell(websocket: WebSocket, name: str):
                 
                 # Wait for command
                 cmd = await websocket.receive_text()
-                
+
+                # Guard: ignore JSON control messages (e.g. resize events from xterm.js)
+                try:
+                    msg = _json.loads(cmd)
+                    if isinstance(msg, dict):
+                        continue  # silently ignore all JSON control messages
+                except _json.JSONDecodeError:
+                    pass  # plain text command — fall through
+
                 if cmd.strip().lower() == 'exit':
                     await websocket.send_text("\r\nDisconnected.\r\n")
                     break
-                
+
                 if not cmd.strip():
                     continue
                 
