@@ -91,6 +91,28 @@ container to IPs listed in `config.json`. Rules persist across reboots.
 | `ClientAliveCountMax 3` | — |
 | `MaxSessions 3` | Limits concurrent SSH sessions |
 
+### Project Directory Permissions
+
+For the chroot user to write to project directories owned by a host user, `jail_set.sh`
+automatically:
+
+1. **Detects the host user's group** from the first `project_path` directory
+2. **Adds the chroot user to that group** (supplementary group membership)
+3. **Sets group-write permissions** on project directories (`chmod -R g+w`)
+
+This allows the agent to edit files while maintaining security:
+- The agent remains isolated in the chroot (cannot access other host paths)
+- File ownership stays with the host user (not transferred to agent)
+- Group membership is the minimum privilege needed for write access
+
+**Prerequisite:** Project directories must be owned by a group that the host user belongs to
+(typically the user's primary group, e.g., `aziz:aziz`). If project directories have different
+ownership, you may need to manually:
+```bash
+sudo chown -R <host-user>:<host-user> /path/to/project
+sudo chmod -R g+w /path/to/project
+```
+
 `PermitOpen` is the definitive port-forward enforcement — the remote sshd rejects
 requests to any unlisted destination regardless of what the client sends.
 
