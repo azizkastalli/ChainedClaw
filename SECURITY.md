@@ -170,6 +170,34 @@ chroot's `/usr/bin` symlinks, preventing any Docker usage.
 Basic auth on all routes. Bound to `127.0.0.1:8090` only. `.htpasswd` uses `chmod 640`
 to prevent world-readable credential hashes.
 
+### Playwright Browser Service (opt-in)
+
+**Profile:** `openclaw` (started automatically with openclaw agent)
+
+A separate container running Playwright with Chromium, isolated from the agent:
+
+```
+Agent container (172.28.0.10) ──CDP──► Playwright (172.28.0.40:9222)
+                                           │
+                                           ▼
+                                    Chromium (sandboxed)
+```
+
+| Property | Effect |
+|----------|--------|
+| Separate container | Browser isolated from agent process |
+| `cap_drop: ALL` | No Linux capabilities |
+| `no-new-privileges` | No privilege escalation |
+| Internal network only | No external network access |
+| No host mounts | Cannot reach host filesystem |
+
+**Usage:** The agent connects via `PLAYWRIGHT_BROWSERS_SERVER=http://playwright-browser:9222`
+
+**Security benefit:** Even if a web page exploits Chromium, the attacker:
+- Cannot reach the agent container's filesystem
+- Cannot reach the host
+- Has no network access beyond the internal Docker network
+
 ---
 
 ## Blast Radius
