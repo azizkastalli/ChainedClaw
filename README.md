@@ -163,7 +163,7 @@ make build AGENT=openclaw       # or claudecode, hermes-agent
 ```bash
 make up AGENT=openclaw          # starts OpenClaw container + nginx dashboard at http://localhost:8090
 make up AGENT=claudecode        # starts Claude Code container (headless)
-make up AGENT=hermes-agent      # starts Hermes Agent (NousResearch) interactive CLI
+make up AGENT=hermes      # starts Hermes Agent (NousResearch) interactive CLI
 
 ssh-keyscan -H 172.28.0.1 >> .ssh/known_hosts
 ```
