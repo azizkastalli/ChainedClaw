@@ -512,6 +512,10 @@ if [ "$FLUSH_MODE" = true ]; then
         exit 1
     fi
     flush_openclaw_rules
+    # Also flush the chroot egress filter chain (set up by chroot_egress_filter.sh)
+    iptables -D OUTPUT -j AGENT-CHROOT-EGRESS 2>/dev/null || true
+    iptables -F AGENT-CHROOT-EGRESS 2>/dev/null || true
+    iptables -X AGENT-CHROOT-EGRESS 2>/dev/null || true
     echo ""
     log_info "All agent-dev firewall rules have been removed."
     echo ""
