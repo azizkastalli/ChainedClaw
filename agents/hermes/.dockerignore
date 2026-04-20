@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Dependencies
+hermes-agent/node_modules
+hermes-agent/.venv
+
+# CI/CD
+.github
+
+# Environment files
+.env
+
+# Documentation
+*.md
+</arg_value><arg_key><task_progress>- [x] Understand init-firewall.sh implementation
+- [x] Review entrypoint.sh for security design
+- [x] Check hermes Dockerfile for current setup
+- [x] Compare with openclaw/claudecode Dockerfiles
+- [x] Review existing agents/hermes directory structure
+- [x] Modify Dockerfile at agents/hermes (add firewall deps, fix paths)
+- [x] Create entrypoint.sh at agents/hermes
+- [x] Create .dockerignore at agents/hermes
+- [ ] Update docker-compose.yaml build context
+- [ ] Test the build</task_progress>
+</write_to_file>

@@ -133,7 +133,7 @@ services:
   # Start with: make up AGENT=hermes
   #
   # Security posture (same hardening as claudecode):
-  #   - user: root (entrypoint) → hermes UID 10000 (agent) via gosu
+  #   - user: root (entrypoint) → hermes UID 1000 (agent) via gosu
   #   - init-firewall.sh      — same internal egress allowlist; extend via config.json allowed_domains
   #   - FORWARD chain         — SSH egress restricted to config.json hosts only
   #   - cap_drop: ALL / cap_add: NET_ADMIN/NET_RAW/SETUID/SETGID/CHOWN
@@ -145,8 +145,8 @@ services:
   hermes:
     profiles: [hermes]
     build:
-      context: ./agents
-      dockerfile: hermes-agent/Dockerfile
+      context: ./agents/hermes
+      dockerfile: Dockerfile
     container_name: agent-dev
     user: root
     cap_drop:
@@ -169,7 +169,7 @@ services:
       - APP_HOME=/home/hermes
       - HERMES_HOME=/opt/data
       - AGENT_USER=hermes
-      - AGENT_CMD=/usr/local/bin/start-hermes.sh
+      - AGENT_CMD=/opt/hermes/.venv/bin/hermes gateway run
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -182,8 +182,8 @@ services:
         target: /home/hermes/.ssh-keys
         read_only: true
       - ./config.json:/config.json:ro
-      - ./scripts/entrypoint.sh:/entrypoint.sh:ro
-    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+      - ./agents/init-firewall.sh:/usr/local/bin/init-firewall.sh:ro
+    entrypoint: ["/entrypoint.sh"]
     networks:
       agent-dev-net:
         ipv4_address: 172.28.0.10
