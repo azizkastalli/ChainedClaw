@@ -17,7 +17,7 @@
 #   make remote-setup HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 #   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
-.PHONY: help uninstall config wizard keys auth build up down restart logs status \
+.PHONY: help uninstall config keys auth build up down restart logs status \
         preflight setup chroot chroot-clean key-add key-remove sync \
         firewall firewall-flush remote-setup remote-clean test clean purge purge-data \
         security-check
@@ -75,9 +75,6 @@ help: ## Show this help message
 uninstall: ## Full uninstallation (keeps images, config)
 	@echo "=== Uninstalling OpenClaw ==="
 	sudo bash $(SCRIPTS_DIR)/uninstall.sh
-
-wizard: ## Run the interactive setup wizard
-	python3 wizard.py
 
 config: ## Copy example config files if not exist
 	@if [ ! -f .env ]; then \
