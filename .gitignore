@@ -1,4 +1,6 @@
 # Environment and secrets
+.claude/
+dashboard/
 __pycache__/
 .env
 .env.local
@@ -32,6 +34,7 @@ nginx/*
 
 .openclaw-data/
 .claudecode-data/
+.hermes-data/
 .ssh/
 # Sysbox packages (no longer used - security is now cap_drop:ALL + seccomp)
 *.deb

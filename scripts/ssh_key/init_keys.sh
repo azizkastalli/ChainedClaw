@@ -30,7 +30,7 @@ echo ""
 mkdir -p "$SSH_DIR"
 
 # Create agent data directories if they don't exist
-for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
+for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data" "$PROJECT_ROOT/.hermes-data"; do
     if [ ! -d "$_DATA_DIR" ]; then
         mkdir -p "$_DATA_DIR"
         log_info "Created $_DATA_DIR"
@@ -78,6 +78,8 @@ if [ "$EUID" -eq 0 ]; then
     for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
         [ -d "$_DATA_DIR" ] && chown 1000:1000 "$_DATA_DIR"
     done
+    # hermes user is UID 10000 (not 1000 like openclaw/claudecode)
+    [ -d "$PROJECT_ROOT/.hermes-data" ] && chown 10000:10000 "$PROJECT_ROOT/.hermes-data"
     log_info "Set ownership to uid 1000:gid 0 for dual-container access"
 else
     log_info "Ownership kept as current user (running without sudo)"

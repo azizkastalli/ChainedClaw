@@ -36,14 +36,15 @@ See [SECURITY.md](SECURITY.md) for the full threat model, layer-by-layer breakdo
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Two container modes are available — only one runs at a time:**
+**Three container modes are available — only one runs at a time:**
 
 | Mode | Command | What runs inside |
 |------|---------|-----------------|
 | `openclaw` | `make up AGENT=openclaw` | OpenClaw gateway + nginx dashboard |
 | `claudecode` | `make up AGENT=claudecode` | Claude Code CLI (headless) |
+| `hermes-agent` | `make up AGENT=hermes-agent` | Hermes Agent (NousResearch) interactive CLI |
 
-Both modes share the same container name, static IP, and firewall rules. Switching is a `make down` + `make up AGENT=<other>`.
+All modes share the same container name, static IP, and firewall rules. Switching is a `make down` + `make up AGENT=<other>`.
 
 ---
 
@@ -132,7 +133,7 @@ make auth    # creates nginx .htpasswd (prints credentials)
 - `.ssh/id_agent` — private key (mode 640, loaded into ssh-agent at container start)
 - `.ssh/id_agent.pub` — public key (installed on remote hosts)
 - `.ssh/known_hosts` — pre-seeded with host fingerprints on first run
-- `.openclaw-data/` and `.claudecode-data/` — persistent agent data directories
+- `.openclaw-data/`, `.claudecode-data/`, and `.hermes-data/` — persistent agent data directories
 
 Save the `make auth` output — the dashboard password is not stored in plaintext anywhere. To regenerate it run `make auth` again.
 
@@ -154,14 +155,15 @@ If `.ssh/known_hosts` is empty when the container starts, the entrypoint runs `s
 Build the image once before first use:
 
 ```bash
-make build AGENT=agent-name # eg: claudecode, openclaw, hermes
+make build AGENT=openclaw       # or claudecode, hermes-agent
 ```
 
 ### 6. Start the agent
 
 ```bash
-make up AGENT=openclaw      # starts OpenClaw container + nginx dashboard at http://localhost:8090
-make up AGENT=claudecode    # starts Claude Code container (headless)
+make up AGENT=openclaw          # starts OpenClaw container + nginx dashboard at http://localhost:8090
+make up AGENT=claudecode        # starts Claude Code container (headless)
+make up AGENT=hermes-agent      # starts Hermes Agent (NousResearch) interactive CLI
 
 ssh-keyscan -H 172.28.0.1 >> .ssh/known_hosts
 ```
@@ -174,7 +176,7 @@ ssh-keyscan -H 172.28.0.1 >> .ssh/known_hosts
 The container entrypoint then:
 1. Configures the internal iptables egress firewall (allows npm, GitHub, Anthropic API only)
 2. Sets up the SSH directory in tmpfs (copies key, generates `~/.ssh/config`, scans known_hosts)
-3. Drops from root to the agent user (`openclaw` or `node`) via `gosu`
+3. Drops from root to the agent user (`openclaw`, `node`, or `hermes`) via `gosu`
 4. Starts `ssh-agent` as the agent user, loads the private key, locks the key file (`chmod 000`)
 5. Execs the agent process (fully unprivileged — no effective Linux capabilities)
 
@@ -252,7 +254,7 @@ Add `"docker_access": true` to a host in `config.json`, then re-run setup. The a
 ```bash
 make logs                          # tail container logs
 make status                        # show container status
-make restart AGENT=openclaw        # restart + re-apply firewall
+make restart AGENT=<agent>         # restart + re-apply firewall
 make down                          # stop container
 
 make sync HOST=my-server           # re-push SSH key (after make keys on a new machine)

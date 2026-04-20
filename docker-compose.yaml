@@ -129,11 +129,76 @@ services:
           memory: 4g
     restart: unless-stopped
 
+  # ── Hermes Agent (NousResearch) ───────────────────────────────────────────────
+  # Start with: make up AGENT=hermes
+  #
+  # Security posture (same hardening as claudecode):
+  #   - user: root (entrypoint) → hermes UID 10000 (agent) via gosu
+  #   - init-firewall.sh      — same internal egress allowlist; extend via config.json allowed_domains
+  #   - FORWARD chain         — SSH egress restricted to config.json hosts only
+  #   - cap_drop: ALL / cap_add: NET_ADMIN/NET_RAW/SETUID/SETGID/CHOWN
+  #   - no-new-privileges, seccomp profile
+  #   - no read_only          — hermes writes to its venv/cache at runtime (same tradeoff as claudecode)
+  #
+  # Set AGENT_CMD=hermes to launch the interactive CLI, or override for gateway mode.
+  # Add extra API domains (OpenAI, Exa, Firecrawl, etc.) to config.json allowed_domains.
+  hermes:
+    profiles: [hermes]
+    build:
+      context: ./agents
+      dockerfile: hermes-agent/Dockerfile
+    container_name: agent-dev
+    user: root
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SETUID
+      - SETGID
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./security/seccomp-agent.json
+    tmpfs:
+      - /tmp
+      - /run
+      - /home/hermes/.ssh
+    environment:
+      - HOME=/home/hermes
+      - APP_HOME=/home/hermes
+      - HERMES_HOME=/opt/data
+      - AGENT_USER=hermes
+      - AGENT_CMD=/usr/local/bin/start-hermes.sh
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - type: bind
+        source: ./.hermes-data
+        target: /opt/data
+      - type: bind
+        source: ./.ssh
+        target: /home/hermes/.ssh-keys
+        read_only: true
+      - ./config.json:/config.json:ro
+      - ./scripts/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    networks:
+      agent-dev-net:
+        ipv4_address: 172.28.0.10
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4g
+    restart: unless-stopped
+
   # ── nginx dashboard ───────────────────────────────────────────────────────────
-  # Only started with AGENT=openclaw (openclaw exposes a web gateway).
+  # Started with AGENT=openclaw or AGENT=hermes (both expose a web gateway).
   # claudecode is CLI-only — no dashboard.
   nginx:
-    profiles: [openclaw]
+    profiles: [openclaw, hermes]
     image: nginx:1.29.8
     container_name: agent-dev-nginx
     ports:
@@ -145,8 +210,6 @@ services:
     networks:
       agent-dev-net:
         ipv4_address: 172.28.0.20
-    depends_on:
-      - openclaw
     restart: unless-stopped
 
 networks:

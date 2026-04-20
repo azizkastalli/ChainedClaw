@@ -93,35 +93,38 @@ keys: ## Initialize SSH keys and data directories
 auth: ## Initialize dashboard authentication
 	bash $(SCRIPTS_DIR)/nginx/init_htpasswd.sh
 
-build: ## Build agent image (usage: make build AGENT=openclaw|claudecode)
+build: ## Build agent image (usage: make build AGENT=openclaw|claudecode|hermes)
 ifndef AGENT
-	@echo "Error: AGENT required. Usage: make build AGENT=openclaw|claudecode"
+	@echo "Error: AGENT required. Usage: make build AGENT=openclaw|claudecode|hermes"
 	@exit 1
 endif
-ifeq ($(filter $(AGENT),openclaw claudecode),)
-	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+ifeq ($(filter $(AGENT),openclaw claudecode hermes),)
+	@echo "Error: AGENT must be 'openclaw', 'claudecode', or 'hermes'"
 	@exit 1
 endif
+  
 	docker compose --profile $(AGENT) build
 
 # ------------------------------------------------------------------------------
 # Container Management
 # ------------------------------------------------------------------------------
 
-up: security-check ## Start an agent container + firewall (usage: make up AGENT=openclaw|claudecode)
+up: security-check ## Start an agent container + firewall (usage: make up AGENT=openclaw|claudecode|hermes)
 ifndef AGENT
 	@echo ""
 	@echo "Error: AGENT is required."
 	@echo ""
-	@echo "  make up AGENT=openclaw     OpenClaw agent + nginx dashboard"
-	@echo "  make up AGENT=claudecode   Claude Code agent (headless, internal firewall)"
+	@echo "  make up AGENT=openclaw       OpenClaw agent + nginx dashboard"
+	@echo "  make up AGENT=claudecode     Claude Code agent (headless, internal firewall)"
+	@echo "  make up AGENT=hermes         Hermes Agent (NousResearch, interactive CLI)"
 	@echo ""
 	@exit 1
 endif
-ifeq ($(filter $(AGENT),openclaw claudecode),)
-	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+ifeq ($(filter $(AGENT),openclaw claudecode hermes),)
+	@echo "Error: AGENT must be 'openclaw', 'claudecode', or 'hermes'"
 	@exit 1
 endif
+  
 	docker compose --profile $(AGENT) up -d
 	@echo ""
 	@echo "Applying firewall rules (requires sudo)..."
@@ -130,17 +133,18 @@ endif
 	@echo "Security layers active. Run 'make preflight' to verify all layers."
 
 down: ## Stop running agent container
-	docker compose --profile openclaw --profile claudecode down
+	docker compose --profile openclaw --profile claudecode --profile hermes down
 
-restart: ## Restart agent container and re-apply firewall (usage: make restart AGENT=openclaw|claudecode)
+restart: ## Restart agent container and re-apply firewall (usage: make restart AGENT=openclaw|claudecode|hermes)
 ifndef AGENT
-	@echo "Error: AGENT required. Usage: make restart AGENT=openclaw|claudecode"
+	@echo "Error: AGENT required. Usage: make restart AGENT=openclaw|claudecode|hermes"
 	@exit 1
 endif
-ifeq ($(filter $(AGENT),openclaw claudecode),)
-	@echo "Error: AGENT must be 'openclaw' or 'claudecode'"
+ifeq ($(filter $(AGENT),openclaw claudecode hermes),)
+	@echo "Error: AGENT must be 'openclaw', 'claudecode', or 'hermes'"
 	@exit 1
 endif
+  
 	docker compose --profile $(AGENT) restart
 	@echo ""
 	@echo "Re-applying firewall rules (requires sudo)..."
@@ -356,12 +360,13 @@ purge-data: ## Remove agent data directories (WARNING: destructive)
 	@echo "This will remove:"
 	@echo "  - .openclaw-data/    (OpenClaw config, workspaces, history)"
 	@echo "  - .claudecode-data/  (Claude Code config, sessions)"
+	@echo "  - .hermes-data/      (Hermes Agent config, sessions)"
 	@echo ""
 	@echo "This action cannot be undone!"
 	@echo ""
 	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
 	@echo ""
-	rm -rf .openclaw-data .claudecode-data
+	rm -rf .openclaw-data .claudecode-data .hermes-data
 	@echo "Agent data directories removed."
 
 purge: ## Full cleanup including config files and data (WARNING: destructive)
@@ -374,13 +379,13 @@ purge: ## Full cleanup including config files and data (WARNING: destructive)
 	@echo "  - Docker containers and chroots"
 	@echo "  - SSH keys"
 	@echo "  - Configuration files (.env, config.json)"
-	@echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
+	@echo "  - Agent data directories (.openclaw-data, .claudecode-data, .hermes-data)"
 	@echo ""
 	@echo "This action cannot be undone!"
 	@echo ""
 	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
 	$(MAKE) uninstall
 	rm -f .env config.json
-	rm -rf .openclaw-data .claudecode-data
+	rm -rf .openclaw-data .claudecode-data .hermes-data
 	@echo ""
 	@echo "Purge complete"

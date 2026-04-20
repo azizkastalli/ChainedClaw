@@ -23,30 +23,31 @@ is designed around: *"If the agent is hijacked via prompt injection, what can it
 
 ## Security Layers
 
-Both agents share the same base layers. openclaw carries one additional restriction
-(`read_only: true`) because it runs third-party code; claudecode is Anthropic's own tool.
+All three agents share the same base layers. openclaw carries one additional restriction
+(`read_only: true`) because it runs third-party code; claudecode and hermes-agent are
+treated as more trusted (first-party / known-source tools).
 
 ### Container Hardening
 
-| Control | openclaw | claudecode | Protects against |
-|---|---|---|---|
-| `cap_drop: ALL` + seccomp | ✅ | ✅ | Kernel exploit, privilege escalation |
-| `read_only: true` | ✅ | ✗ | Persistence of compromise in container layer |
-| `no-new-privileges` | ✅ | ✗ | setuid/setgid escalation (claudecode needs sudo for firewall) |
-| `.ssh-keys` read-only | ✅ | ✅ | SSH key replacement and known_hosts tampering |
-| `ssh-agent` key loading | ✅ | ✅ | Private key exfiltration (key file `chmod 000` after loading) |
-| `tmpfs /tmp /run ~/.ssh` | ✅ | ✅ | Temp file persistence across restarts |
-| Resource limits | ✅ 2g | ✅ 4g | CPU/memory DoS |
-| No host Docker socket | ✅ | ✅ | Host Docker daemon unreachable |
-| No host filesystem mounts | ✅ | ✅ | Host files unreachable |
-| Internal firewall (init-firewall.sh) | ✅ | ✅ | Unrestricted internet egress |
+| Control | openclaw | claudecode | hermes-agent | Protects against |
+|---|---|---|---|---|
+| `cap_drop: ALL` + seccomp | ✅ | ✅ | ✅ | Kernel exploit, privilege escalation |
+| `read_only: true` | ✅ | ✗ | ✗ | Persistence of compromise in container layer |
+| `no-new-privileges` | ✅ | ✗ | ✗ | setuid/setgid escalation (needs sudo for firewall) |
+| `.ssh-keys` read-only | ✅ | ✅ | ✅ | SSH key replacement and known_hosts tampering |
+| `ssh-agent` key loading | ✅ | ✅ | ✅ | Private key exfiltration (key file `chmod 000` after loading) |
+| `tmpfs /tmp /run ~/.ssh` | ✅ | ✅ | ✅ | Temp file persistence across restarts |
+| Resource limits | ✅ 2g | ✅ 4g | ✅ 4g | CPU/memory DoS |
+| No host Docker socket | ✅ | ✅ | ✅ | Host Docker daemon unreachable |
+| No host filesystem mounts | ✅ | ✅ | ✅ | Host files unreachable |
+| Internal firewall (init-firewall.sh) | ✅ | ✅ | ✅ | Unrestricted internet egress |
 
 **Note on openclaw `read_only: true`:** tmpfs covers `/tmp`, `/run`, `~/.ssh`. If the
 agent needs additional write paths, add them as tmpfs entries in docker-compose.yaml.
 
-**Note on claudecode:** `read_only` and `no-new-privileges` are not set — the node
-user needs sudo for iptables (init-firewall.sh). Host isolation is provided entirely
-by `cap_drop: ALL` + seccomp profile.
+**Note on claudecode / hermes-agent:** `read_only` and `no-new-privileges` are not set —
+the agent user needs to write to its runtime directories (config, venv cache, session data).
+Host isolation is provided entirely by `cap_drop: ALL` + seccomp profile.
 
 ### SSH Key Protection (ssh-agent)
 
@@ -68,8 +69,9 @@ SSH outbound is also allowed (needed for chroot host access).
 DNS exfiltration tunnels where a compromised agent encodes data in DNS queries to
 attacker-controlled nameservers.
 
-The allowlist is defined in `agents/init-firewall.sh`. If openclaw needs additional
-endpoints (Telegram, custom APIs), add them there.
+The core allowlist is defined in `agents/init-firewall.sh`. To allow additional endpoints
+(e.g. OpenAI, Exa, Telegram, custom APIs), add them to the `allowed_domains` array in
+`config.json` — no changes to `init-firewall.sh` are needed.
 
 ### Firewall (iptables FORWARD chain)
 
@@ -212,7 +214,7 @@ prompt injection → agent
     → [if chroot_egress_filter: false] ⚠️ curl/wget/python3 can reach any remote endpoint
   → internet: npm, GitHub, api.anthropic.com only (internal firewall)
     DNS: Docker resolver only (no DNS exfiltration)
-    (add openclaw-specific domains to agents/init-firewall.sh as needed)
+    (add agent-specific domains to config.json allowed_domains as needed)
   → SSH private key: locked in ssh-agent (not readable as file)
 ```
 

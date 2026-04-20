@@ -44,7 +44,7 @@ confirm_uninstall() {
     echo "This will NOT remove:"
     echo "  - Docker images (kept for reinstallation)"
     echo "  - .env and config.json files"
-    echo "  - Agent data directories (.openclaw-data, .claudecode-data)"
+    echo "  - Agent data directories (.openclaw-data, .claudecode-data, .hermes-data)"
     echo "    Use 'make purge-data' to remove agent data"
     echo ""
     
@@ -167,7 +167,7 @@ remove_data() {
     log_step "Removing data directories..."
     
     # Remove agent data directories
-    for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
+    for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data" "$PROJECT_ROOT/.hermes-data"; do
         if [ -d "$_DATA_DIR" ]; then
             rm -rf "$_DATA_DIR"
             log_info "Removed $_DATA_DIR"
@@ -200,7 +200,7 @@ show_summary() {
     echo "Kept:"
     echo "  • Docker images (use 'docker image prune' to remove)"
     echo "  • Configuration files (.env, config.json)"
-    echo "  • Agent data directories (.openclaw-data, .claudecode-data)"
+    echo "  • Agent data directories (.openclaw-data, .claudecode-data, .hermes-data)"
     echo "    Use 'make purge-data' to remove agent data"
     echo ""
     echo "To reinstall, run:"
