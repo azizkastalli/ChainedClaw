@@ -4,7 +4,7 @@ FROM nousresearch/hermes-agent@sha256:d634f4a65c65a2e4ed60d5711570911c378beac89a
 # Add tools required by entrypoint.sh: firewall init + SSH key setup.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    iptables ipset iproute2 dnsutils aggregate jq curl openssh-client \
+    iptables ipset iproute2 dnsutils aggregate jq curl openssh-client tmux \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Entrypoint: firewall init + SSH setup + privilege drop → start-hermes.sh
