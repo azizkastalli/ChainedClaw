@@ -192,6 +192,7 @@ gosu "$AGENT_USER" bash -c "
     set -uo pipefail
     HERMES_HOME=\"$HERMES_HOME\"
     INSTALL_DIR=\"$INSTALL_DIR_SNAPSHOT\"
+    SSH_DIR=\"$SSH_DIR\"
 
     mkdir -p \"\$HERMES_HOME\"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
@@ -200,6 +201,12 @@ gosu "$AGENT_USER" bash -c "
     [ ! -f \"\$HERMES_HOME/SOUL.md\"     ] && cp \"\$INSTALL_DIR/docker/SOUL.md\"          \"\$HERMES_HOME/SOUL.md\"     2>/dev/null || true
 
     [ -d \"\$INSTALL_DIR/skills\" ] && python3 \"\$INSTALL_DIR/tools/skills_sync.py\" 2>/dev/null || true
+
+    # Create SSH symlink so SSH finds config regardless of \$HOME
+    if [ \"\$HERMES_HOME\" != \"/home/hermes\" ] && [ -d \"\$SSH_DIR\" ] && [ ! -L \"\$HERMES_HOME/.ssh\" ]; then
+        ln -sf \"\$SSH_DIR\" \"\$HERMES_HOME/.ssh\"
+        echo -e \"\033[0;32m[INFO]\033[0m SSH dir symlinked to \$HERMES_HOME/.ssh\"
+    fi
 "
 
 # ── 9. Summary ─────────────────────────────────────────────────────────────────
@@ -243,6 +250,18 @@ else
         if command -v ssh-agent &>/dev/null && command -v ssh-add &>/dev/null && [ -f "$SSH_DIR/id_agent" ]; then
             eval "$(ssh-agent -s)" >/dev/null 2>&1
             if ssh-add "$SSH_DIR/id_agent" >/dev/null 2>&1; then
+                export SSH_AUTH_SOCK
+                chmod 000 "$SSH_DIR/id_agent" 2>/dev/null || true
+                echo -e "\033[0;32m[INFO]\033[0m SSH key loaded into ssh-agent (key file locked)"
+            else
+                echo -e "\033[0;31m[ERROR]\033[0m ssh-add failed — key may not be readable by $USER"
+            fi
+        else
+            echo -e "\033[1;33m[WARN]\033[0m ssh-agent not available or no SSH key — private key remains readable"
+        fi
+        eval "$AGENT_CMD"
+    '
+fi
                 export SSH_AUTH_SOCK
                 chmod 000 "$SSH_DIR/id_agent" 2>/dev/null || true
                 echo -e "\033[0;32m[INFO]\033[0m SSH key loaded into ssh-agent (key file locked)"
