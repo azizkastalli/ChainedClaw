@@ -16,3 +16,7 @@ RUN chmod +x /entrypoint.sh /usr/local/bin/start-hermes.sh
 # must exist in the image layer so Docker can mount tmpfs over it)
 RUN mkdir -p /home/hermes/.ssh-keys /home/hermes/.ssh && \
     chown -R hermes:hermes /home/hermes/.ssh-keys /home/hermes/.ssh
+
+# Pre-create .local directory for hermes state (gateway locks, etc.)
+RUN mkdir -p /home/hermes/.local/state/hermes && \
+    chown -R hermes:hermes /home/hermes/.local
