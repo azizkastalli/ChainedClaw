@@ -86,7 +86,11 @@ if [ "$EUID" -eq 0 ]; then
     chown "${_CLAUDECODE_UID}:0" "$SSH_DIR" "$KEY_FILE" "$KEY_FILE.pub" "$KNOWN_HOSTS"
     [ -d "$PROJECT_ROOT/.openclaw-data"  ] && chown "${_OPENCLAW_UID}:${_OPENCLAW_UID}"   "$PROJECT_ROOT/.openclaw-data"
     [ -d "$PROJECT_ROOT/.claudecode-data"] && chown "${_CLAUDECODE_UID}:${_CLAUDECODE_UID}" "$PROJECT_ROOT/.claudecode-data"
-    [ -d "$PROJECT_ROOT/.hermes-data"    ] && chown "${_HERMES_UID}:${_HERMES_UID}"        "$PROJECT_ROOT/.hermes-data"
+    # hermes-data: chown to hermes UID but mode 755 so entrypoint root can traverse it
+    if [ -d "$PROJECT_ROOT/.hermes-data" ]; then
+        chown "${_HERMES_UID}:${_HERMES_UID}" "$PROJECT_ROOT/.hermes-data"
+        chmod 755 "$PROJECT_ROOT/.hermes-data"
+    fi
     log_info "Set ownership: SSH dir → uid ${_CLAUDECODE_UID}:gid 0; data dirs → respective UIDs"
 else
     log_info "Ownership kept as current user (running without sudo)"

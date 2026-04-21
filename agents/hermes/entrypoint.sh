@@ -181,28 +181,26 @@ if [ "$AGENT_USER" != "root" ]; then
 fi
 
 # ── 8. Bootstrap hermes config files ───────────────────────────────────────────
-# Create essential directory structure in HERMES_HOME
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+# Fix ownership of any files left by older root-phase runs (cap_add:CHOWN available).
+chown -R "$AGENT_USER" "$HERMES_HOME" 2>/dev/null || true
 
-# .env
-if [ ! -f "$HERMES_HOME/.env" ]; then
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env" 2>/dev/null || true
-fi
+# Run as AGENT_USER via gosu: cap_drop:ALL removes CAP_DAC_OVERRIDE from root,
+# so root cannot write to a directory owned by a different uid (10000).
+# gosu to hermes first so file ownership is correct from the start.
+INSTALL_DIR_SNAPSHOT="$INSTALL_DIR"
+gosu "$AGENT_USER" bash -c "
+    set -uo pipefail
+    HERMES_HOME=\"$HERMES_HOME\"
+    INSTALL_DIR=\"$INSTALL_DIR_SNAPSHOT\"
 
-# config.yaml
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml" 2>/dev/null || true
-fi
+    mkdir -p \"\$HERMES_HOME\"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
-# SOUL.md
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md" 2>/dev/null || true
-fi
+    [ ! -f \"\$HERMES_HOME/.env\"        ] && cp \"\$INSTALL_DIR/.env.example\"            \"\$HERMES_HOME/.env\"        2>/dev/null || true
+    [ ! -f \"\$HERMES_HOME/config.yaml\" ] && cp \"\$INSTALL_DIR/cli-config.yaml.example\" \"\$HERMES_HOME/config.yaml\" 2>/dev/null || true
+    [ ! -f \"\$HERMES_HOME/SOUL.md\"     ] && cp \"\$INSTALL_DIR/docker/SOUL.md\"          \"\$HERMES_HOME/SOUL.md\"     2>/dev/null || true
 
-# Sync bundled skills (manifest-based so user edits are preserved)
-if [ -d "$INSTALL_DIR/skills" ]; then
-    python3 "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null || true
-fi
+    [ -d \"\$INSTALL_DIR/skills\" ] && python3 \"\$INSTALL_DIR/tools/skills_sync.py\" 2>/dev/null || true
+"
 
 # ── 9. Summary ─────────────────────────────────────────────────────────────────
 echo ""
