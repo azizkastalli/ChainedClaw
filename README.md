@@ -221,7 +221,38 @@ openclaw devices approve <device-id>
 
 The dashboard is available only at `http://localhost:8090` — it is bound to `127.0.0.1` and protected by basic auth.
 
-### 9. Verify all security layers
+### 9. Interact with Hermes (hermes agent only)
+
+The Hermes agent runs in a Python virtual environment at `/opt/hermes/.venv`. To activate it inside the container:
+
+```bash
+# Enter the container as hermes user
+docker exec -it -u hermes agent-dev bash
+
+# Activate the virtual environment
+source /opt/hermes/.venv/bin/activate
+
+# Now you can use hermes commands directly
+hermes --help
+```
+
+Or run a single command:
+
+```bash
+docker exec -it -u hermes agent-dev bash -c "source /opt/hermes/.venv/bin/activate && hermes --help"
+```
+
+**Key paths inside the container:**
+
+| Path | Description |
+|------|-------------|
+| `/opt/hermes/.venv/bin/activate` | Virtual environment activation script |
+| `/opt/hermes/.venv/bin/hermes` | Hermes CLI binary |
+| `/opt/data` | Hermes home directory (config, sessions, etc.) |
+| `/opt/data/.env` | Hermes environment variables |
+| `/opt/data/config.yaml` | Hermes configuration |
+
+### 10. Verify all security layers
 
 ```bash
 make preflight
