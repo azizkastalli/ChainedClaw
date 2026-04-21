@@ -363,7 +363,7 @@ purge-data: ## Remove agent data directories (WARNING: destructive)
 	@echo ""
 	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
 	@echo ""
-	rm -rf .openclaw-data .claudecode-data .hermes-data
+	sudo rm -rf .openclaw-data .claudecode-data .hermes-data
 	@echo "Agent data directories removed."
 
 purge: ## Full cleanup including config files and data (WARNING: destructive)
@@ -375,14 +375,12 @@ purge: ## Full cleanup including config files and data (WARNING: destructive)
 	@echo "This will remove:"
 	@echo "  - Docker containers and chroots"
 	@echo "  - SSH keys"
-	@echo "  - Configuration files (.env, config.json)"
 	@echo "  - Agent data directories (.openclaw-data, .claudecode-data, .hermes-data)"
 	@echo ""
 	@echo "This action cannot be undone!"
 	@echo ""
 	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ] || exit 1
 	$(MAKE) uninstall
-	rm -f .env config.json
-	rm -rf .openclaw-data .claudecode-data .hermes-data
+	sudo rm -rf .openclaw-data .claudecode-data .hermes-data
 	@echo ""
 	@echo "Purge complete"

@@ -38,5 +38,3 @@ nginx/*
 .ssh/
 # Sysbox packages (no longer used - security is now cap_drop:ALL + seccomp)
 *.deb
-
-.wizard-state.json

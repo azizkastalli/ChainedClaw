@@ -166,7 +166,6 @@ services:
       - /home/hermes/.ssh
     environment:
       - HOME=/home/hermes
-      - APP_HOME=/home/hermes
       - HERMES_HOME=/opt/data
       - AGENT_USER=hermes
       - AGENT_CMD=/usr/local/bin/start-hermes.sh
