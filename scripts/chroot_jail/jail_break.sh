@@ -175,9 +175,17 @@ else
     log_info "  All mounts successfully unmounted"
 fi
 
-# 3. Remove user
+# 3. Remove user (and clean up supplementary group memberships first)
 echo "[3/5] Removing user..."
 if id "$AGENT_USER" &>/dev/null; then
+    # Remove supplementary groups added by jail_set.sh so re-runs start clean
+    _primary_group=$(id -gn "$AGENT_USER" 2>/dev/null || true)
+    for _grp in $(id -nG "$AGENT_USER" 2>/dev/null); do
+        if [ "$_grp" != "$_primary_group" ] && [ "$_grp" != "$AGENT_USER" ] && [ "$_grp" != "docker" ]; then
+            gpasswd -d "$AGENT_USER" "$_grp" 2>/dev/null || true
+            log_info "Removed $AGENT_USER from group '$_grp'"
+        fi
+    done
      userdel "$AGENT_USER"
     echo "  User removed."
 else

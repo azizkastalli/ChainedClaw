@@ -415,7 +415,11 @@ while IFS= read -r project_path; do
     # Ensure project directory is group-writable on the host
     # This allows the agent user (via supplementary group) to write to files
     if [ -w "$project_path" ] || [ -O "$project_path" ]; then
-        chmod -R g+w "$project_path" 2>/dev/null || true
+        if ! chmod -R g+w "$project_path"; then
+            log_error "Cannot set group-write on $project_path"
+            log_error "Fix: sudo chown -R <host-user>:<host-group> $project_path && sudo chmod -R g+w $project_path"
+            exit 1
+        fi
         log_info "Set group-write on: $project_path"
     else
         log_warn "Cannot set group-write on $project_path (not owner) — ensure manually: chmod -R g+w $project_path"
@@ -450,33 +454,45 @@ fi
 # 6. Set up user and SSH keys
 echo "[6/6] Configuring user..."
 
-# Get the first project path's owner to add as supplementary group
-# This allows dev-bot to write to project directories owned by the host user
-FIRST_PROJECT_PATH=$(echo "$PROJECT_PATHS" | head -1)
-HOST_USER_GROUP=""
-if [ -n "$FIRST_PROJECT_PATH" ] && [ -d "$FIRST_PROJECT_PATH" ]; then
-    HOST_USER=$(stat -c '%G' "$FIRST_PROJECT_PATH" 2>/dev/null)
-    if [ -n "$HOST_USER" ] && getent group "$HOST_USER" &>/dev/null; then
-        HOST_USER_GROUP="$HOST_USER"
-        log_info "Will add $AGENT_USER to host user group '$HOST_USER' for project write access"
+# Collect unique groups from all project_paths so the agent can write to every project
+declare -A _SEEN_GROUPS
+GROUPS_TO_ADD=()
+while IFS= read -r _path; do
+    [ -z "$_path" ] || [ ! -d "$_path" ] && continue
+    _grp=$(stat -c '%G' "$_path" 2>/dev/null)
+    if [ -n "$_grp" ] && [ "$_grp" != "root" ] && getent group "$_grp" &>/dev/null; then
+        if [ -z "${_SEEN_GROUPS[$_grp]+x}" ]; then
+            _SEEN_GROUPS[$_grp]=1
+            GROUPS_TO_ADD+=("$_grp")
+        fi
     fi
+done <<< "$PROJECT_PATHS"
+
+if [ ${#GROUPS_TO_ADD[@]} -gt 0 ]; then
+    log_info "Will add $AGENT_USER to groups: ${GROUPS_TO_ADD[*]}"
 fi
 
 # Create user FIRST (before any chown calls)
 if id "$AGENT_USER" &>/dev/null; then
-     usermod -d "/home/$AGENT_USER" -s /bin/bash "$AGENT_USER" 2>/dev/null || true
-     # Add to host user group if not already a member
-     if [ -n "$HOST_USER_GROUP" ] && ! id -nG "$AGENT_USER" | grep -qw "$HOST_USER_GROUP"; then
-         usermod -aG "$HOST_USER_GROUP" "$AGENT_USER"
-         log_info "Added $AGENT_USER to group $HOST_USER_GROUP"
-     fi
+    usermod -d "/home/$AGENT_USER" -s /bin/bash "$AGENT_USER" 2>/dev/null || true
+    for _grp in "${GROUPS_TO_ADD[@]}"; do
+        if ! id -nG "$AGENT_USER" | grep -qw "$_grp"; then
+            if ! usermod -aG "$_grp" "$AGENT_USER"; then
+                log_error "Failed to add $AGENT_USER to group '$_grp'"
+                log_error "Fix: sudo usermod -aG $_grp $AGENT_USER"
+                exit 1
+            fi
+            log_info "Added $AGENT_USER to group '$_grp'"
+        fi
+    done
 else
-     if [ -n "$HOST_USER_GROUP" ]; then
-         useradd -d "/home/$AGENT_USER" -s /bin/bash -G "$HOST_USER_GROUP" "$AGENT_USER"
-         log_info "Created $AGENT_USER with supplementary group $HOST_USER_GROUP"
-     else
-         useradd -d "/home/$AGENT_USER" -s /bin/bash "$AGENT_USER"
-     fi
+    _GROUPS_ARG=""
+    [ ${#GROUPS_TO_ADD[@]} -gt 0 ] && _GROUPS_ARG="-G $(IFS=,; echo "${GROUPS_TO_ADD[*]}")"
+    if ! useradd -d "/home/$AGENT_USER" -s /bin/bash $_GROUPS_ARG "$AGENT_USER"; then
+        log_error "Failed to create user $AGENT_USER"
+        exit 1
+    fi
+    [ ${#GROUPS_TO_ADD[@]} -gt 0 ] && log_info "Created $AGENT_USER with supplementary groups: ${GROUPS_TO_ADD[*]}"
 fi
 
 log_info "User $AGENT_USER created/updated"

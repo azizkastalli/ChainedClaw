@@ -166,10 +166,9 @@ services:
       - /home/hermes/.ssh
     environment:
       - HOME=/home/hermes
-      - APP_HOME=/home/hermes
       - HERMES_HOME=/opt/data
       - AGENT_USER=hermes
-      - AGENT_CMD=/opt/hermes/.venv/bin/hermes gateway run
+      - AGENT_CMD=/usr/local/bin/start-hermes.sh
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

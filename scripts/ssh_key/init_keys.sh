@@ -70,17 +70,28 @@ chmod 640 "$KEY_FILE"
 chmod 644 "$KEY_FILE.pub"
 chmod 644 "$KNOWN_HOSTS"
 
-# Ownership: uid 1000 (claudecode / node user), gid 0 (root group for openclaw)
-# - claudecode (uid 1000): is owner → can read private key (6__)
-# - openclaw   (uid 0):    is in gid 0 → can read private key (__4_) + traverse dir
+# Load agent UIDs from .env (OPENCLAW_UID, CLAUDECODE_UID, HERMES_UID).
+# Defaults match official image UIDs and preserve existing behaviour when .env is absent.
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    # shellcheck source=/dev/null
+    source "$PROJECT_ROOT/.env"
+fi
+_OPENCLAW_UID="${OPENCLAW_UID:-1000}"
+_CLAUDECODE_UID="${CLAUDECODE_UID:-1000}"
+_HERMES_UID="${HERMES_UID:-10000}"
+
+# Ownership: claudecode/node user owns key (reads via owner bit),
+# openclaw root (gid 0) reads via group bit — no CAP_DAC_READ_SEARCH needed.
 if [ "$EUID" -eq 0 ]; then
-    chown 1000:0 "$SSH_DIR" "$KEY_FILE" "$KEY_FILE.pub" "$KNOWN_HOSTS"
-    for _DATA_DIR in "$PROJECT_ROOT/.openclaw-data" "$PROJECT_ROOT/.claudecode-data"; do
-        [ -d "$_DATA_DIR" ] && chown 1000:1000 "$_DATA_DIR"
-    done
-    # hermes user is UID 10000 (not 1000 like openclaw/claudecode)
-    [ -d "$PROJECT_ROOT/.hermes-data" ] && chown 10000:10000 "$PROJECT_ROOT/.hermes-data"
-    log_info "Set ownership to uid 1000:gid 0 for dual-container access"
+    chown "${_CLAUDECODE_UID}:0" "$SSH_DIR" "$KEY_FILE" "$KEY_FILE.pub" "$KNOWN_HOSTS"
+    [ -d "$PROJECT_ROOT/.openclaw-data"  ] && chown "${_OPENCLAW_UID}:${_OPENCLAW_UID}"   "$PROJECT_ROOT/.openclaw-data"
+    [ -d "$PROJECT_ROOT/.claudecode-data"] && chown "${_CLAUDECODE_UID}:${_CLAUDECODE_UID}" "$PROJECT_ROOT/.claudecode-data"
+    # hermes-data: chown to hermes UID but mode 755 so entrypoint root can traverse it
+    if [ -d "$PROJECT_ROOT/.hermes-data" ]; then
+        chown "${_HERMES_UID}:${_HERMES_UID}" "$PROJECT_ROOT/.hermes-data"
+        chmod 755 "$PROJECT_ROOT/.hermes-data"
+    fi
+    log_info "Set ownership: SSH dir → uid ${_CLAUDECODE_UID}:gid 0; data dirs → respective UIDs"
 else
     log_info "Ownership kept as current user (running without sudo)"
 fi
