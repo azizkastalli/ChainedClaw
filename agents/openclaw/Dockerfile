@@ -48,6 +48,7 @@ RUN ln -s /home/openclaw/.cache/ms-playwright/chromium-1155/chrome-linux/chrome 
 # openclaw needs additional endpoints (e.g. Telegram, custom APIs).
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 RUN chmod +x /usr/local/bin/init-firewall.sh
+COPY agent_instruct.md /home/openclaw/agent_instruct.md
 
 # Pre-create SSH directories so entrypoint can write into them
 # even when the container filesystem is read-only (directories exist in image layer).
