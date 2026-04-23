@@ -8,15 +8,17 @@
 # host), any Docker-in-Docker containers launched via the rootless daemon, and
 # native processes on the host.
 #
-# Allowed: loopback, established connections, DNS, HTTP (80), HTTPS (443).
-# All other ports from AGENT_USER are dropped.
+# How it works:
+#   1. iptables nat OUTPUT redirects AGENT_USER's port 80/443 to a local
+#      transparent proxy (egress_proxy.py, running as root on PROXY_PORT).
+#   2. The proxy reads the TLS SNI (HTTPS) or Host header (HTTP), checks the
+#      hostname against config.json allowed_domains, then tunnels or blocks.
+#   3. The filter OUTPUT chain drops everything else from AGENT_USER (non-
+#      web ports, raw TCP, etc.). DNS (53) is allowed.
 #
-# Note: HTTP/HTTPS are allowed to any destination because Docker image pulls
-# go through CDN subdomains (cdn01.quay.io, S3, Akamai, Cloudflare, etc.)
-# that are dynamic and cannot be reliably allowlisted by IP. The container-
-# level security boundary is docker_proxy.py (bind-mount allowlist,
-# no --privileged, no network=host). This filter's value is blocking all
-# non-web egress ports (raw TCP, custom protocols, etc.).
+# This restores hostname-based allowlisting without breaking CDN-backed
+# registries (quay.io CDN subdomains, S3 presigned URLs, etc.), because the
+# proxy matches on the SNI hostname — not the destination IP.
 #
 # Enable per-host by setting "egress_filter": true in config.json.
 #
@@ -28,14 +30,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../../.env"
+CONFIG_JSON="$SCRIPT_DIR/../../config.json"
+
+PROXY_PORT=3129
+PROXY_BIN="/usr/local/bin/openclaw-egress-proxy"
+PROXY_LOG="/tmp/openclaw-egress-proxy.log"
+FILTER_CHAIN="AGENT-WORKSPACE-EGRESS"
+NAT_CHAIN="AGENT-EGRESS-NAT"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 if [ "$EUID" -ne 0 ]; then
@@ -61,56 +70,150 @@ if ! id "$AGENT_USER" &>/dev/null; then
     exit 1
 fi
 AGENT_UID=$(id -u "$AGENT_USER")
-CHAIN="AGENT-WORKSPACE-EGRESS"
+
+# ── Flush ─────────────────────────────────────────────────────────────────────
 
 if [ "$FLUSH" = "--flush" ]; then
     echo "=== Removing egress filter for $AGENT_USER (UID $AGENT_UID) ==="
-    iptables -D OUTPUT -j "$CHAIN" 2>/dev/null || true
-    iptables -F "$CHAIN" 2>/dev/null || true
-    iptables -X "$CHAIN" 2>/dev/null || true
-    # Also clean up the legacy chroot-named chain from prior installs.
-    iptables -D OUTPUT -j AGENT-CHROOT-EGRESS 2>/dev/null || true
-    iptables -F AGENT-CHROOT-EGRESS 2>/dev/null || true
-    iptables -X AGENT-CHROOT-EGRESS 2>/dev/null || true
+
+    # Remove filter chain
+    iptables -D OUTPUT -j "$FILTER_CHAIN" 2>/dev/null || true
+    iptables -F "$FILTER_CHAIN" 2>/dev/null || true
+    iptables -X "$FILTER_CHAIN" 2>/dev/null || true
+
+    # Remove nat chain
+    iptables -t nat -D OUTPUT -m owner --uid-owner "$AGENT_UID" -j "$NAT_CHAIN" 2>/dev/null || true
+    iptables -t nat -F "$NAT_CHAIN" 2>/dev/null || true
+    iptables -t nat -X "$NAT_CHAIN" 2>/dev/null || true
+
+    # Stop the proxy
+    pkill -f 'openclaw-egress-proxy' 2>/dev/null || true
+
+    # Clean up legacy chain names from prior installs
+    for legacy in AGENT-CHROOT-EGRESS; do
+        iptables -D OUTPUT -j "$legacy" 2>/dev/null || true
+        iptables -F "$legacy" 2>/dev/null || true
+        iptables -X "$legacy" 2>/dev/null || true
+    done
+
     log_info "Egress filter removed"
     exit 0
 fi
 
+# ── Apply ─────────────────────────────────────────────────────────────────────
+
 echo "=== Applying egress filter for $AGENT_USER (UID $AGENT_UID) ==="
 
-if ! iptables -L "$CHAIN" -n &>/dev/null; then
-    iptables -N "$CHAIN"
+if [ ! -f "$CONFIG_JSON" ]; then
+    log_error "config.json not found at $CONFIG_JSON"
+    exit 1
 fi
-iptables -F "$CHAIN"
 
-# Loopback
-iptables -A "$CHAIN" -o lo -j RETURN
+# ── 1. Install and start the egress proxy ─────────────────────────────────────
 
-# Established/return traffic (SSH sessions, pulled registry data, etc.)
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -m state --state ESTABLISHED,RELATED -j RETURN
+log_info "[1/3] Starting egress proxy (port $PROXY_PORT)..."
+install -m 0755 "$SCRIPT_DIR/egress_proxy.py" "$PROXY_BIN"
+
+# Stop any existing instance before (re)starting
+pkill -f 'openclaw-egress-proxy' 2>/dev/null || true
+sleep 0.3
+
+nohup python3 "$PROXY_BIN" "$PROXY_PORT" "$CONFIG_JSON" \
+    </dev/null >>"$PROXY_LOG" 2>&1 &
+
+# Wait up to 5 s for the proxy to bind its port
+for _ in $(seq 1 10); do
+    python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(0.5)
+try:
+    s.connect(('127.0.0.1', $PROXY_PORT))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null && break
+    sleep 0.5
+done
+
+if ! python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(('127.0.0.1', $PROXY_PORT))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+    log_error "Egress proxy failed to start. Check $PROXY_LOG"
+    exit 1
+fi
+
+log_info "  Proxy listening on 127.0.0.1:$PROXY_PORT"
+log_info "  Log: $PROXY_LOG"
+
+# ── 2. Set up filter chain ────────────────────────────────────────────────────
+
+log_info "[2/3] Applying filter chain rules..."
+
+if ! iptables -L "$FILTER_CHAIN" -n &>/dev/null; then
+    iptables -N "$FILTER_CHAIN"
+fi
+iptables -F "$FILTER_CHAIN"
+
+# Loopback — includes redirected 80/443 traffic going to the proxy
+iptables -A "$FILTER_CHAIN" -o lo -j RETURN
+
+# Established/related return traffic
+iptables -A "$FILTER_CHAIN" -m owner --uid-owner "$AGENT_UID" \
+    -m state --state ESTABLISHED,RELATED -j RETURN
 
 # DNS
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p udp --dport 53 -j RETURN
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 53 -j RETURN
+iptables -A "$FILTER_CHAIN" -m owner --uid-owner "$AGENT_UID" \
+    -p udp --dport 53 -j RETURN
+iptables -A "$FILTER_CHAIN" -m owner --uid-owner "$AGENT_UID" \
+    -p tcp --dport 53 -j RETURN
 
-# HTTP + HTTPS to any destination — CDN-backed registries (quay.io, Docker Hub,
-# ghcr.io, etc.) serve image blobs from dynamic CDN subdomains and S3 buckets
-# that cannot be enumerated by IP. Blocking by port is still meaningful: it
-# prevents raw TCP exfiltration, custom-protocol C2, and non-web egress.
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 80  -j RETURN
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 443 -j RETURN
-log_info "  Allowed HTTP (80) and HTTPS (443) to any destination"
+# Drop everything else from AGENT_USER.
+# Port 80/443 is handled by the nat REDIRECT below — it goes to loopback
+# (caught by the -o lo rule above) before it can reach this DROP.
+iptables -A "$FILTER_CHAIN" -m owner --uid-owner "$AGENT_UID" -j DROP
 
-# Default drop for AGENT_USER
-iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -j DROP
+# Wire filter chain into OUTPUT once
+if ! iptables -L OUTPUT -n | grep -q "$FILTER_CHAIN"; then
+    iptables -I OUTPUT 2 -j "$FILTER_CHAIN"
+fi
 
-# Wire into OUTPUT once
-if ! iptables -L OUTPUT -n | grep -q "$CHAIN"; then
-    iptables -I OUTPUT 2 -j "$CHAIN"
+# ── 3. Set up nat REDIRECT ────────────────────────────────────────────────────
+
+log_info "[3/3] Applying nat REDIRECT rules..."
+
+if ! iptables -t nat -L "$NAT_CHAIN" -n &>/dev/null; then
+    iptables -t nat -N "$NAT_CHAIN"
+fi
+iptables -t nat -F "$NAT_CHAIN"
+
+iptables -t nat -A "$NAT_CHAIN" -p tcp --dport 443 -j REDIRECT --to-ports "$PROXY_PORT"
+iptables -t nat -A "$NAT_CHAIN" -p tcp --dport 80  -j REDIRECT --to-ports "$PROXY_PORT"
+
+# Wire nat chain into OUTPUT once (must match on AGENT_UID to avoid redirecting
+# the proxy's own outbound connections — proxy runs as root)
+if ! iptables -t nat -L OUTPUT -n | grep -q "$NAT_CHAIN"; then
+    iptables -t nat -I OUTPUT 1 -m owner --uid-owner "$AGENT_UID" -j "$NAT_CHAIN"
 fi
 
 echo ""
 log_info "Egress filter active (UID $AGENT_UID)"
-log_info "  Allowed: loopback, established, DNS (53), HTTP (80), HTTPS (443)"
-log_info "  Blocked: all other ports from $AGENT_USER"
+log_info "  Port 80/443: REDIRECT → proxy → hostname check → tunnel or block"
+log_info "  DNS (53): allowed directly"
+log_info "  All other ports: dropped"
+log_info "  Allowed domains: $(python3 -c "
+import json
+with open('$CONFIG_JSON') as f:
+    c = json.load(f)
+print(', '.join(c.get('allowed_domains', [])))
+" 2>/dev/null)"
 log_info "To remove: $0 $HOST_NAME --flush"

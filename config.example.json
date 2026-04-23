@@ -9,6 +9,7 @@
     "files.pythonhosted.org",
     "github.com",
     "api.github.com",
+    "githubusercontent.com",
     "ghcr.io"
   ],
   "ssh_hosts": [
