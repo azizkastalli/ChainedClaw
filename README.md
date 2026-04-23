@@ -1,6 +1,8 @@
 # OpenClaw
 
-AI agent platform with SSH bridge. The agent runs in a hardened, zero-trust container and accesses your servers via locked-down SSH chroot jails. Every security layer is designed around one assumption: **the agent container may be compromised at any time** (e.g. via prompt injection).
+AI agent platform with SSH bridge. The agent runs in a hardened, zero-trust container and accesses your servers via SSH into per-host rootless-Docker workspace containers on the target machines. Every security layer is designed around one assumption: **the agent container may be compromised at any time** (e.g. via prompt injection).
+
+> Upgrading from an earlier release that used chroot jails? See [MIGRATION.md](MIGRATION.md).
 
 See [SECURITY.md](SECURITY.md) for the full threat model, layer-by-layer breakdown, and known limitations.
 
@@ -22,8 +24,9 @@ See [SECURITY.md](SECURITY.md) for the full threat model, layer-by-layer breakdo
 │                      │ SSH ed25519 (key in ssh-agent)      │
 │                      ▼                                     │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  chroot jail  (dev-bot user, project_paths only)     │  │
-│  │    no SSH/network tools · /proc /sys read-only       │  │
+│  │  workspace container  (rootless Docker, dev-bot uid) │  │
+│  │    no SSH/network tools · project_paths bind-mounted │  │
+│  │    sshd ForceCommand → docker exec (no host shell)   │  │
 │  │    PermitOpen enforces port-forward allowlist        │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                            │
@@ -42,7 +45,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model, layer-by-layer breakdo
 |------|---------|-----------------|
 | `openclaw` | `make up AGENT=openclaw` | OpenClaw gateway + nginx dashboard |
 | `claudecode` | `make up AGENT=claudecode` | Claude Code CLI (headless) |
-| `hermes-agent` | `make up AGENT=hermes-agent` | Hermes Agent (NousResearch) interactive CLI |
+| `hermes` | `make up AGENT=hermes` | Hermes Agent (NousResearch) interactive CLI |
 
 All modes share the same container name, static IP, and firewall rules. Switching is a `make down` + `make up AGENT=<other>`.
 
@@ -51,7 +54,7 @@ All modes share the same container name, static IP, and firewall rules. Switchin
 ## Prerequisites
 
 - Docker + Docker Compose (v2)
-- `sudo` access on the host (for iptables firewall rules and chroot setup)
+- `sudo` access on the host (for iptables firewall rules and workspace container setup)
 - Docker must support seccomp (`docker info | grep seccomp`)
 
 No other host dependencies required.
@@ -82,10 +85,10 @@ Edit `config.json` to list every host the agent may SSH into:
       "port": 22,
       "user": "dev-bot",
       "strict_host_key_checking": true,
-      "isolation": "chroot",
+      "isolation": "container",
       "project_paths": ["/path/to/your/project"],
       "forward_ports": [],
-      "chroot_egress_filter": false,
+      "egress_filter": false,
       "docker_access": false
     }
   ]
@@ -101,26 +104,26 @@ Edit `config.json` to list every host the agent may SSH into:
 | `name` | Yes | Short alias used by SSH config and make targets |
 | `hostname` | Yes | IP or hostname of the target server |
 | `port` | No (default: 22) | SSH port |
-| `user` | No (default: root) | SSH user inside the chroot |
+| `user` | No (default: root) | SSH user on the target host |
 | `strict_host_key_checking` | No (default: true) | Set to `false` only for ephemeral hosts |
-| `isolation` | Yes | `chroot` or `restricted_key` — see below |
-| `project_paths` | Yes | Directories the agent can access inside the chroot |
+| `isolation` | Yes | `container` or `restricted_key` — see below |
+| `project_paths` | Yes | Host directories bind-mounted into the workspace container |
 | `forward_ports` | No | Ports the agent may tunnel to itself (e.g. `[3000, 8080]`) |
-| `chroot_egress_filter` | No (default: false) | Lock outbound traffic from the chroot user to known registries only |
-| `docker_access` | No (default: false) | Give the chroot user access to a rootless Docker daemon |
+| `egress_filter` | No (default: false) | Lock outbound traffic from the workspace user to known registries only |
+| `docker_access` | No (default: false) | Bind-mount the rootless Docker socket into the workspace container |
 
 **Isolation modes:**
 
 | Mode | When to use |
 |------|-------------|
-| `chroot` | Standard VMs and bare-metal servers where you have sudo access |
-| `restricted_key` | Managed environments (RunPod, shared containers) where bind mounts and sudo are unavailable |
+| `container` | Standard VMs and bare-metal servers where you have sudo access |
+| `restricted_key` | Managed environments (RunPod, shared containers) where rootless Docker and sudo are unavailable |
 
-**`forward_ports`** — ports the agent may tunnel back to itself (e.g. to reach a dev server from nginx). Enforced by `PermitOpen` in sshd — the remote SSH server rejects any port-forward request not on this list. Empty array disables forwarding entirely. `chroot` mode only.
+**`forward_ports`** — ports the agent may tunnel back to itself (e.g. to reach a dev server from nginx). Enforced by `PermitOpen` in sshd — the remote SSH server rejects any port-forward request not on this list. Empty array disables forwarding entirely. `container` mode only.
 
-**`chroot_egress_filter`** — when enabled, iptables rules on the remote host restrict outbound traffic from the chroot user to DNS + HTTPS to package registries (npm, PyPI, GitHub) only. Closes the main remaining attack path: without this, `curl`/`wget` inside the chroot can reach arbitrary internet endpoints.
+**`egress_filter`** — when enabled, iptables rules on the remote host restrict outbound traffic from the workspace user (by UID) to DNS + HTTPS to package registries (npm, PyPI, GitHub, Docker Hub) only. Because rootless Docker egress appears as that UID on the host, this covers both native processes and container traffic. Without this, an agent can reach arbitrary internet endpoints from the workspace.
 
-**`docker_access`** — when enabled, a rootless Docker daemon is set up for the chroot user. Containers run in a user namespace — they cannot escape to the host Docker daemon or run `--privileged`. Without this, the `docker` binary is excluded from the chroot entirely.
+**`docker_access`** — when enabled, the rootless Docker socket is bind-mounted into the workspace container. The agent can `docker build`/`docker run` but cannot reach the host Docker daemon or run `--privileged` containers.
 
 ### 3. Generate SSH keys and dashboard credentials
 
@@ -182,17 +185,17 @@ The container entrypoint then:
 
 ### 7. Set up target hosts
 
-This installs the SSH chroot jail and the agent's public key on the target server.
+This provisions a rootless-Docker workspace container and installs the agent's SSH key on the target server. Every SSH session from the agent is routed into the workspace container via `ForceCommand` — the agent never gets a shell on the real host filesystem.
 
 **Local host** (the machine running Docker — accessed via the Docker bridge):
 ```bash
-make setup HOST=my-server       # chroot + key install + sshd reload in one step
+make setup HOST=my-server       # workspace + key install + sshd reload in one step
 
 make restart AGENT=agent-name
 make test HOST=my-server        # verify: should print "dev-bot"
 ```
 
-**Remote host** via SSH (`chroot` or `restricted_key` mode):
+**Remote host** via SSH (`container` or `restricted_key` mode):
 ```bash
 make remote-setup HOST=my-server REMOTE_KEY=/path/to/admin/key [REMOTE_USER=ubuntu]
 make test HOST=my-server
@@ -264,19 +267,19 @@ Checks: seccomp profile present, FORWARD chain firewall active, container runnin
 
 ## Optional security hardening
 
-### Chroot egress filter (strongly recommended)
+### Egress filter (strongly recommended)
 
-Add `"chroot_egress_filter": true` to each host in `config.json`, then re-run setup:
+Add `"egress_filter": true` to each host in `config.json`, then re-run setup:
 
 ```bash
 make setup HOST=my-server    # or make remote-setup for remote hosts
 ```
 
-This installs iptables rules on the remote host that restrict the chroot user's outbound traffic to DNS + HTTPS to package registries only. Without this, a compromised agent can use `curl`/`wget`/`python3` inside the chroot to exfiltrate data to arbitrary internet endpoints — bypassing both the container's internal firewall and the host FORWARD chain (which only restrict the container's network namespace, not the remote server's).
+This installs iptables rules on the remote host that restrict the workspace user's outbound traffic (matched by UID) to DNS + HTTPS to package registries only. Because rootless Docker egress appears as that UID on the host, this covers both host processes and container egress. Without this, a compromised agent can reach arbitrary internet endpoints from the workspace — bypassing both the container's internal firewall and the host FORWARD chain (which only restrict the agent container's network namespace).
 
-### Rootless Docker inside chroot (opt-in)
+### Docker access inside workspace (opt-in)
 
-Add `"docker_access": true` to a host in `config.json`, then re-run setup. The agent gets a rootless Docker daemon scoped to its user namespace — it can `docker pull` and `docker run`, but cannot reach the host Docker daemon or run `--privileged` containers.
+Add `"docker_access": true` to a host in `config.json`, then re-run setup. The rootless Docker socket is bind-mounted into the workspace container — the agent can `docker pull` and `docker run`, but cannot reach the host Docker daemon or run `--privileged` containers.
 
 ---
 
@@ -291,7 +294,7 @@ make down                          # stop container
 make sync HOST=my-server           # re-push SSH key (after make keys on a new machine)
 make key-add HOST=my-server        # alias for sync
 make key-remove HOST=my-server     # remove SSH key from host
-make chroot-clean HOST=my-server   # tear down chroot jail
+make workspace-clean HOST=my-server  # tear down workspace container
 ```
 
 ---
@@ -309,15 +312,15 @@ make chroot-clean HOST=my-server   # tear down chroot jail
 | `make logs` | Follow container logs |
 | `make status` | Show container status |
 | `make preflight` | Verify all security layers |
-| `make setup HOST=<h>` | Full local host setup: chroot + key + sshd reload |
-| `make chroot HOST=<h>` | Set up chroot jail only |
-| `make chroot-clean HOST=<h>` | Tear down chroot jail |
+| `make setup HOST=<h>` | Full local host setup: workspace + key + sshd reload |
+| `make workspace HOST=<h>` | Set up workspace container only |
+| `make workspace-clean HOST=<h>` | Tear down workspace container |
 | `make key-add HOST=<h>` | Install SSH key to host |
 | `make key-remove HOST=<h>` | Remove SSH key from host |
 | `make sync HOST=<h>` | Re-sync SSH key (alias for key-add) |
 | `make test HOST=<h>` | Test SSH connection to host |
-| `make remote-setup HOST=<h> REMOTE_KEY=<k>` | Set up chroot on a remote host |
-| `make remote-clean HOST=<h> REMOTE_KEY=<k>` | Tear down chroot on a remote host |
+| `make remote-setup HOST=<h> REMOTE_KEY=<k>` | Set up workspace on a remote host |
+| `make remote-clean HOST=<h> REMOTE_KEY=<k>` | Tear down workspace on a remote host |
 | `make firewall` | Re-apply FORWARD chain firewall |
 | `make firewall-flush` | Remove all FORWARD chain firewall rules |
 | `make uninstall` | Full uninstall (keeps images and config) |
@@ -345,7 +348,7 @@ Check that the host is in `config.json` and the firewall has been re-applied: `m
 
 **`make test` fails with "connection refused"**
 
-The chroot or SSH key may not be set up. Run `make setup HOST=<name>` for local hosts or `make remote-setup HOST=<name> REMOTE_KEY=<key>` for remote hosts.
+The workspace container or SSH key may not be set up. Run `make setup HOST=<name>` for local hosts or `make remote-setup HOST=<name> REMOTE_KEY=<key>` for remote hosts.
 
 **Dashboard not accessible**
 
