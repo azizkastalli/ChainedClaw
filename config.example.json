@@ -10,7 +10,10 @@
     "github.com",
     "api.github.com",
     "githubusercontent.com",
-    "ghcr.io"
+    "ghcr.io",
+    "docker.io",
+    "docker.com",
+    "quay.io"
   ],
   "ssh_hosts": [
     {
