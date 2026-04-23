@@ -1,0 +1,123 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontSize 12
+skinparam rectangleBorderColor #666666
+skinparam noteBorderColor #AAAAAA
+skinparam noteBackgroundColor #FFFDE7
+skinparam arrowColor #333333
+
+title OpenClaw — Defense-in-Depth Security Architecture\n(threat model: agent container is always considered potentially compromised)
+
+' ══════════════════════════════════════════
+'  AGENT HOST
+' ══════════════════════════════════════════
+rectangle "**Agent Host**" as AgentHost #F0F4FF {
+
+  rectangle "  Host iptables FORWARD chain  \n  <i>scripts/firewall/setup_firewall.sh</i>  " as ForwardFW #FFE0B2
+
+  rectangle "**Docker Agent Container**  [agent-dev · 172.28.0.10]" as AgentCtr #DDEEFF {
+
+    rectangle "  Seccomp blocklist  \n  <i>security/seccomp-agent.json</i>\n  + cap_drop: ALL + selective cap_add  " as Seccomp #FFCCCC
+
+    rectangle "  Internal egress firewall  \n  <i>agents/init-firewall.sh</i>  " as InternalFW #FFCCCC
+
+    rectangle "  ssh-agent  \n  key loaded in tmpfs · source file chmod 000  " as SSHAgent #CCFFCC
+
+    rectangle "  **Agent Process**\n  openclaw | claude --auto-approve | hermes  " as AgentProc #DDEEFF
+  }
+}
+
+note right of ForwardFW
+  SSH egress from container
+  locked to IPs listed in
+  config.json only.
+  All other outbound TCP blocked.
+end note
+
+note right of Seccomp
+  Blocks: mount, unshare, ptrace,
+  bpf, kexec, perf_event_open …
+  NET_ADMIN/NET_RAW granted only
+  during entrypoint (firewall init),
+  then cleared via gosu exec.
+end note
+
+note right of InternalFW
+  Allowlist: api.anthropic.com,
+  npm registry, GitHub, Sentry,
+  Statsig, Docker DNS resolver.
+  Default: DROP outbound.
+end note
+
+note right of SSHAgent
+  Agent can authenticate outbound
+  SSH sessions but cannot read
+  or exfiltrate the private key.
+end note
+
+' ══════════════════════════════════════════
+'  TARGET HOST
+' ══════════════════════════════════════════
+rectangle "**Target Host**" as TargetHost #F0FFF0 {
+
+  rectangle "  sshd  \n  PermitOpen · ForceCommand  " as SSHD #FFE0B2
+
+  rectangle "**Workspace Container**  [rootless Docker · AGENT_USER namespace]" as WorkspaceCtr #DDEEFF {
+
+    rectangle "  dev-bot shell session  " as Shell #CCFFDD
+  }
+
+  rectangle "  UID-keyed egress filter  \n  <i>scripts/workspace/egress_filter.sh</i>  \n  <i>(egress_filter: true)</i>  " as EgressFilter #FFCCCC
+
+  rectangle "  Docker socket proxy  \n  <i>scripts/workspace/docker_proxy.py</i>  \n  <i>(docker_access: true)</i>  " as DockerProxy #CCFFCC
+}
+
+note right of SSHD
+  PermitOpen: only forward_ports
+  list — sshd rejects all other
+  port-forward requests.
+  ForceCommand: session_entry.sh
+  routes every session into the
+  workspace container via
+  docker exec — no host shell.
+end note
+
+note right of WorkspaceCtr
+  ssh, scp, nc, socat, telnet
+  stripped from image.
+  project_paths bind-mounted RW.
+  Agent never touches real
+  host filesystem.
+end note
+
+note right of EgressFilter
+  iptables rules matched by UID.
+  Outbound restricted to DNS +
+  HTTPS to npm/PyPI/GitHub/
+  Docker Hub only.
+  Covers rootless Docker egress
+  (appears as same UID on host).
+end note
+
+note right of DockerProxy
+  Intercepts /containers/create.
+  Blocks: mounts outside
+  project_paths, --privileged,
+  network=host, dangerous caps.
+  Proxy socket: 0o666 so rootless
+  container UID mapping can reach it.
+end note
+
+' ══════════════════════════════════════════
+'  FLOWS
+' ══════════════════════════════════════════
+AgentProc       -down->  SSHAgent    : uses
+SSHAgent        -right-> ForwardFW   : SSH (ed25519)
+ForwardFW       -right-> SSHD        : TCP 22\n(allowed IPs only)
+SSHD            -down->  Shell       : docker exec\n(ForceCommand)
+Shell           -down->  EgressFilter : all outbound traffic\n(optional layer)
+Shell           -right-> DockerProxy  : /var/run/docker.sock\n(optional layer)
+DockerProxy     -right-> SSHAgent     : filtered API calls\nto rootless daemon
+
+@enduml

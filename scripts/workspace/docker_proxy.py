@@ -249,7 +249,7 @@ def main():
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(proxy_sock_path)
-    os.chmod(proxy_sock_path, 0o660)
+    os.chmod(proxy_sock_path, 0o666)
     server.listen(64)
     log.info('listening')
 
