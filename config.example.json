@@ -1,6 +1,19 @@
 {
   "allowed_domains": [
-    "api.openai.com"
+    "api.anthropic.com",
+    "sentry.io",
+    "statsig.anthropic.com",
+    "statsig.com",
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "github.com",
+    "api.github.com",
+    "ghcr.io",
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+    "quay.io"
   ],
   "ssh_hosts": [
     {

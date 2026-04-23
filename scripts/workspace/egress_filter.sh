@@ -86,8 +86,14 @@ iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -m state --state ESTABLIS
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p udp --dport 53 -j RETURN
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 53 -j RETURN
 
-# HTTPS to common package registries (resolve each domain, allow each A record)
-for domain in registry.npmjs.org pypi.org files.pythonhosted.org api.github.com github.com ghcr.io registry-1.docker.io auth.docker.io production.cloudflare.docker.com quay.io; do
+# HTTPS to domains listed in config.json allowed_domains
+CONFIG_JSON="$SCRIPT_DIR/../../config.json"
+if [ ! -f "$CONFIG_JSON" ]; then
+    log_error "config.json not found at $CONFIG_JSON — cannot build egress allowlist"
+    exit 1
+fi
+while IFS= read -r domain; do
+    [ -z "$domain" ] && continue
     ips=$(dig +short A "$domain" 2>/dev/null || true)
     for ip in $ips; do
         if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
@@ -95,7 +101,13 @@ for domain in registry.npmjs.org pypi.org files.pythonhosted.org api.github.com 
             log_info "  Allowed HTTPS to $domain ($ip)"
         fi
     done
-done
+done < <(python3 -c "
+import json
+with open('$CONFIG_JSON') as f:
+    c = json.load(f)
+for d in c.get('allowed_domains', []):
+    print(d)
+" 2>/dev/null)
 
 # Default drop for AGENT_USER
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -j DROP

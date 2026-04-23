@@ -1,8 +1,8 @@
 #!/bin/bash
-# Internal firewall for agent containers (openclaw / claudecode)
-# Restricts outbound connections to only necessary services:
-#   npm registry, GitHub, Anthropic API, Sentry, Statsig
-# SSH outbound is also allowed (needed for chroot host access).
+# Internal firewall for agent containers (openclaw / claudecode / hermes).
+# Restricts outbound HTTPS to domains listed in config.json allowed_domains.
+# SSH egress is allowed to hosts listed in config.json ssh_hosts.
+# config.json is the single source of truth — no domains are hardcoded here.
 # This runs inside the container's own network namespace (isolated by cap_drop:ALL + seccomp).
 #
 # Source: https://github.com/anthropics/claude-code/tree/main/.devcontainer
@@ -73,26 +73,31 @@ iptables -A OUTPUT -o lo -j ACCEPT
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net
 
-# Fetch and add GitHub IP ranges
-echo "Fetching GitHub IP ranges..."
-gh_ranges=$(curl -s https://api.github.com/meta)
-if [ -z "$gh_ranges" ]; then
-    echo "ERROR: Failed to fetch GitHub IP ranges"
-    exit 1
-fi
-if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
-    echo "ERROR: GitHub API response missing required fields"
-    exit 1
-fi
-echo "Processing GitHub IPs..."
-while read -r cidr; do
-    if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
-        echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
-        exit 1
+# Fetch GitHub CIDR ranges if github.com or ghcr.io is in allowed_domains.
+# GitHub publishes their IP ranges via the meta API; using CIDRs is more reliable
+# than dig since GitHub's pool is large and changes frequently.
+if [ -f /config.json ] && python3 -c "
+import json, sys
+with open('/config.json') as f:
+    c = json.load(f)
+sys.exit(0 if any('github' in d or 'ghcr.io' in d for d in c.get('allowed_domains', [])) else 1)
+" 2>/dev/null; then
+    echo "Fetching GitHub IP ranges..."
+    gh_ranges=$(curl -s https://api.github.com/meta)
+    if [ -z "$gh_ranges" ]; then
+        echo "WARN: Failed to fetch GitHub IP ranges — skipping"
+    elif ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+        echo "WARN: GitHub API response missing required fields — skipping"
+    else
+        echo "Processing GitHub IPs..."
+        while read -r cidr; do
+            if [[ "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+                ipset add allowed-domains "$cidr"
+            fi
+        done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+        echo "  GitHub IP ranges added"
     fi
-    echo "Adding GitHub range $cidr"
-    ipset add allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+fi
 
 # resolve_domain DOMAIN — resolves A records and adds IPs to the allowed-domains ipset.
 # Non-fatal: warns and skips on failure (used for optional/extra domains).
@@ -120,34 +125,9 @@ resolve_domain() {
     done <<< "$ips"
 }
 
-# Core allowed domains (strict — container won't start if these can't be resolved)
-for domain in \
-    "registry.npmjs.org" \
-    "api.anthropic.com" \
-    "sentry.io" \
-    "statsig.anthropic.com" \
-    "statsig.com"; do
-    resolve_domain "$domain" true
-done
-
-# Common container registries beyond Docker Hub (non-strict — warn and skip on failure)
-for domain in ghcr.io quay.io; do
-    resolve_domain "$domain" false
-done
-
-# Extra domains from EXTRA_ALLOWED_DOMAINS env var (space-separated, non-fatal)
-# Set in docker-compose.yaml environment or .env:
-#   EXTRA_ALLOWED_DOMAINS="api.openai.com my-litellm.example.com"
-if [ -n "${EXTRA_ALLOWED_DOMAINS:-}" ]; then
-    echo "Processing EXTRA_ALLOWED_DOMAINS..."
-    for domain in $EXTRA_ALLOWED_DOMAINS; do
-        resolve_domain "$domain" false
-    done
-fi
-
-# Extra domains from config.json top-level allowed_domains array (non-fatal)
-# Add to config.json: { "allowed_domains": ["api.openai.com", "my-litellm.host"] }
-if [ -f /config.json ] && command -v python3 &>/dev/null; then
+# Resolve all allowed domains from config.json (single source of truth).
+# Add or remove domains in config.json allowed_domains — no script changes needed.
+if [ -f /config.json ]; then
     while read -r domain; do
         [ -z "$domain" ] && continue
         resolve_domain "$domain" false
@@ -158,6 +138,8 @@ with open('/config.json') as f:
 for d in c.get('allowed_domains', []):
     print(d)
 " 2>/dev/null)
+else
+    echo "WARN: /config.json not found — no HTTPS egress allowed (agent API calls will fail)"
 fi
 
 # Get host network from default route and allow it (needed for SSH to chroot hosts)
