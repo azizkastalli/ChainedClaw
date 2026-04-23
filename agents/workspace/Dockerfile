@@ -43,9 +43,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       locales \
       tzdata \
       docker.io \
-      docker-compose-plugin \
   && rm -rf /var/lib/apt/lists/* \
   && apt-get clean
+
+# Install Docker Compose plugin (docker-compose-plugin is Docker CE repo only;
+# ubuntu's docker.io package does not bundle it, so install the binary directly).
+ARG COMPOSE_VERSION=v2.29.7
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-$(uname -m)" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # Remove SSH/network-pivot tools if any transitively installed package pulled them in.
 # Fail open: missing binaries are not an error.
