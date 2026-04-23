@@ -6,10 +6,10 @@
 #   make help             - Show all available targets
 #
 # Local host targets (require HOST parameter):
-#   make chroot HOST=name       - Set up chroot for a local host
-#   make chroot-clean HOST=name - Tear down chroot for a local host
-#   make key-add HOST=name      - Install SSH key to host chroot
-#   make key-remove HOST=name   - Remove SSH key from host chroot
+#   make workspace HOST=name       - Set up workspace container for a local host
+#   make workspace-clean HOST=name - Tear down workspace for a local host
+#   make key-add HOST=name      - Install SSH key to host
+#   make key-remove HOST=name   - Remove SSH key from host
 #   make sync HOST=name         - Re-sync SSH key (alias for key-add)
 #   make test HOST=name         - Test SSH connection to host
 #
@@ -18,7 +18,7 @@
 #   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
 .PHONY: help uninstall config keys auth build up down restart logs status \
-        preflight setup chroot chroot-clean key-add key-remove sync \
+        preflight setup workspace workspace-clean key-add key-remove sync \
         firewall firewall-flush remote-setup remote-clean test clean purge purge-data \
         security-check
 
@@ -46,24 +46,24 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Host-specific targets (require HOST=name):"
-	@echo "  setup             Full host setup: chroot + key + sshd reload (recommended)"
-	@echo "  chroot            Set up chroot jail for HOST (step 1 of setup)"
-	@echo "  chroot-clean      Tear down chroot for HOST"
-	@echo "  key-add           Install SSH key to HOST chroot (step 2 of setup)"
-	@echo "  key-remove        Remove SSH key from HOST chroot"
+	@echo "  setup             Full host setup: workspace + key + sshd reload (recommended)"
+	@echo "  workspace         Set up workspace container for HOST (step 1 of setup)"
+	@echo "  workspace-clean   Tear down workspace container for HOST"
+	@echo "  key-add           Install SSH key to HOST (step 2 of setup)"
+	@echo "  key-remove        Remove SSH key from HOST"
 	@echo "  sync              Re-sync SSH key to HOST (alias for key-add)"
 	@echo "  test              Test SSH connection to HOST"
 	@echo ""
 	@echo "Remote host targets (hostname/port read from config.json):"
-	@echo "  remote-setup      Copy files and set up chroot on a remote host"
-	@echo "  remote-clean      Tear down chroot on a remote host and clean up"
+	@echo "  remote-setup      Copy files and set up workspace on a remote host"
+	@echo "  remote-clean      Tear down workspace on a remote host and clean up"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make keys                       # Generate SSH keys"
 	@echo "  make auth                       # Initialize dashboard credentials"
 	@echo "  make up                         # Start containers"
-	@echo "  make chroot HOST=my-host        # Set up chroot for local host"
-	@echo "  make key-add HOST=my-host       # Install SSH key to local chroot"
+	@echo "  make workspace HOST=my-host     # Set up workspace container for local host"
+	@echo "  make key-add HOST=my-host       # Install ForceCommand SSH key for local host"
 	@echo "  make remote-setup HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
 	@echo "  make test HOST=my-host          # Test SSH to my-host"
 	@echo "  make logs                       # Show container logs"
@@ -234,47 +234,48 @@ preflight: ## Verify all security layers are active
 	@echo "To verify per-host access: make test HOST=<name>"
 
 # ------------------------------------------------------------------------------
-# Chroot Management (requires HOST parameter)
+# Workspace Management (requires HOST parameter)
 # ------------------------------------------------------------------------------
 
-setup: ## Full host setup in one step: chroot + SSH key + sshd reload (usage: make setup HOST=name)
+setup: ## Full host setup in one step: workspace + SSH key + sshd reload (usage: make setup HOST=name)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make setup HOST=name"
 	@exit 1
 endif
 	@echo "=== Setting up host: $(HOST) ==="
-	sudo bash $(SCRIPTS_DIR)/chroot_jail/jail_set.sh $(HOST)
+	sudo bash $(SCRIPTS_DIR)/workspace/workspace_up.sh $(HOST)
 	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
 	sudo systemctl reload sshd
 	@echo ""
 	@echo "Host $(HOST) is ready. Verify with: make test HOST=$(HOST)"
 
-chroot: ## Set up chroot jail for HOST (usage: make chroot HOST=name)
+workspace: ## Set up workspace container for HOST (usage: make workspace HOST=name)
 ifndef HOST
-	@echo "Error: HOST parameter required. Usage: make chroot HOST=name"
+	@echo "Error: HOST parameter required. Usage: make workspace HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/chroot_jail/jail_set.sh $(HOST)
+	sudo bash $(SCRIPTS_DIR)/workspace/workspace_up.sh $(HOST)
 	@echo "Reloading sshd..."
 	sudo systemctl reload sshd
 
-chroot-clean: ## Tear down chroot for HOST (usage: make chroot-clean HOST=name)
+workspace-clean: ## Tear down workspace for HOST (usage: make workspace-clean HOST=name)
 ifndef HOST
-	@echo "Error: HOST parameter required. Usage: make chroot-clean HOST=name"
+	@echo "Error: HOST parameter required. Usage: make workspace-clean HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/chroot_jail/jail_break.sh $(HOST)
+	sudo bash $(SCRIPTS_DIR)/workspace/workspace_down.sh $(HOST)
+	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh $(HOST)
 	@echo "Reloading sshd..."
 	sudo systemctl reload sshd
 	@echo ""
-	@echo "NOTE: If you re-create the chroot, re-install the SSH key:"
-	@echo "  make chroot HOST=$(HOST) && make key-add HOST=$(HOST)"
+	@echo "Your project files are untouched."
+	@echo "To rebuild: make workspace HOST=$(HOST) && make key-add HOST=$(HOST)"
 
 # ------------------------------------------------------------------------------
 # Maintenance
 # ------------------------------------------------------------------------------
 
-key-add: ## Install SSH key to HOST (mode-aware: chroot or restricted_key)
+key-add: ## Install SSH key to HOST (mode-aware: container or restricted_key)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make key-add HOST=name"
 	@exit 1
@@ -282,7 +283,7 @@ endif
 	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
 	sudo systemctl reload sshd 2>/dev/null || true
 
-key-remove: ## Remove SSH key from HOST (mode-aware: chroot or restricted_key)
+key-remove: ## Remove SSH key from HOST (mode-aware: container or restricted_key)
 ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make key-remove HOST=name"
 	@exit 1
@@ -302,7 +303,7 @@ endif
 # Remote Host Management (requires HOST, REMOTE_IP, REMOTE_KEY parameters)
 # ------------------------------------------------------------------------------
 
-remote-setup: ## Set up chroot on a remote host (usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key)
+remote-setup: ## Set up workspace on a remote host (usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key)
 ifndef HOST
 	@echo "Error: HOST required. Usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key"
 	@exit 1
@@ -313,7 +314,7 @@ ifndef REMOTE_KEY
 endif
 	bash $(SCRIPTS_DIR)/remote/setup.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
 
-remote-clean: ## Tear down chroot on a remote host (usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key)
+remote-clean: ## Tear down workspace on a remote host (usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key)
 ifndef HOST
 	@echo "Error: HOST required. Usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key"
 	@exit 1
@@ -323,6 +324,17 @@ ifndef REMOTE_KEY
 	@exit 1
 endif
 	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
+
+remote-purge: ## Full teardown: also removes dev-bot user, rootless Docker, ACLs (usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key)
+ifndef HOST
+	@echo "Error: HOST required. Usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+ifndef REMOTE_KEY
+	@echo "Error: REMOTE_KEY required. Usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key"
+	@exit 1
+endif
+	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER) --purge
 
 firewall: ## Set up firewall rules
 	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
@@ -338,6 +350,16 @@ endif
 	@echo "Testing SSH connection to $(HOST) (as $(AGENT_EXEC_USER))..."
 	docker exec -i -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) \
 		bash -c 'SSH_AUTH_SOCK=$$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1); export SSH_AUTH_SOCK; ssh $(HOST) whoami'
+
+ssh: ## Open an interactive shell on HOST exactly as the agent would (via id_agent + ForceCommand)
+ifndef HOST
+	@echo "Error: HOST parameter required. Usage: make ssh HOST=name"
+	@exit 1
+endif
+	@echo "Opening agent-perspective shell on $(HOST)..."
+	@SOCKET=$$(docker exec -u $(AGENT_EXEC_USER) $(CONTAINER_NAME) bash -c 'ls /tmp/ssh-*/agent.* 2>/dev/null | head -1'); \
+	docker exec -it -u $(AGENT_EXEC_USER) -e SSH_AUTH_SOCK="$$SOCKET" $(CONTAINER_NAME) \
+		ssh $(HOST)
 
 # ------------------------------------------------------------------------------
 # Cleanup
@@ -373,7 +395,7 @@ purge: ## Full cleanup including config files and data (WARNING: destructive)
 	@echo "=========================================="
 	@echo ""
 	@echo "This will remove:"
-	@echo "  - Docker containers and chroots"
+	@echo "  - Docker containers and workspace containers"
 	@echo "  - SSH keys"
 	@echo "  - Agent data directories (.openclaw-data, .claudecode-data, .hermes-data)"
 	@echo ""

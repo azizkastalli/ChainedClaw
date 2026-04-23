@@ -9,8 +9,8 @@
       "port": 22,
       "user": "dev-bot",
       "strict_host_key_checking": true,
-      "isolation": "chroot",
-      "chroot_egress_filter": true,
+      "isolation": "container",
+      "egress_filter": true,
       "docker_access": false,
       "project_paths": [
         "/path/to/your/project"
@@ -23,9 +23,9 @@
       "port": 22,
       "user": "dev-bot",
       "strict_host_key_checking": true,
-      "isolation": "chroot",
-      "chroot_egress_filter": true,
-      "docker_access": false,
+      "isolation": "container",
+      "egress_filter": true,
+      "docker_access": true,
       "project_paths": [
         "/path/to/your/project"
       ],

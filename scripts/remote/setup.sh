@@ -79,9 +79,9 @@ REMOTE_PORT=$(jq -r --arg name "$HOST_NAME" \
     "$PROJECT_ROOT/config.json")
 
 ISOLATION=$(jq -r --arg name "$HOST_NAME" \
-    '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
+    '.ssh_hosts[] | select(.name == $name) | .isolation // "container"' \
     "$PROJECT_ROOT/config.json")
-[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="chroot"
+[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="container"
 
 if [ -z "$REMOTE_IP" ] || [ "$REMOTE_IP" = "null" ]; then
     log_error "Host '$HOST_NAME' not found in config.json"
@@ -95,6 +95,16 @@ SSH_OPTS=(
     -p "$REMOTE_PORT"
     -o StrictHostKeyChecking=accept-new
     -o BatchMode=yes
+    -o ConnectTimeout=15
+    -o ServerAliveInterval=10
+    -o ServerAliveCountMax=3
+)
+# SSH_SUDO_OPTS: same as SSH_OPTS but with TTY allocation so sudo can prompt for a password
+SSH_SUDO_OPTS=(
+    -i "$SSH_KEY"
+    -p "$REMOTE_PORT"
+    -tt
+    -o StrictHostKeyChecking=accept-new
     -o ConnectTimeout=15
     -o ServerAliveInterval=10
     -o ServerAliveCountMax=3
@@ -139,24 +149,33 @@ scp "${SCP_OPTS[@]}" \
 
 # Copy only the specific variables needed by the remote scripts (not the full .env)
 # This avoids leaking DASHBOARD_PASSWORD and other unrelated secrets on remote hosts.
-grep -E '^(AGENT_USER|AGENT_CONTAINER_NAME|CHROOT_BASE)=' "$PROJECT_ROOT/.env" > /tmp/openclaw-env-scoped 2>/dev/null || true
+grep -E '^(AGENT_USER|AGENT_CONTAINER_NAME|WORKSPACE_IMAGE)=' "$PROJECT_ROOT/.env" > /tmp/openclaw-env-scoped 2>/dev/null || true
 scp "${SCP_OPTS[@]}" /tmp/openclaw-env-scoped "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/.env"
 rm -f /tmp/openclaw-env-scoped
-log_info "  Copied scripts, scoped .env, config.json, id_agent.pub"
 
-# 3. Run setup and install SSH key
+# Copy the workspace Dockerfile build context so workspace_up.sh can build it remotely.
+scp -r "${SCP_OPTS[@]}" \
+    "$PROJECT_ROOT/agents" \
+    "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"
+log_info "  Copied scripts, agents/workspace, scoped .env, config.json, id_agent.pub"
+
+# Check that the remote user can sudo (gives a clear error before attempting privileged steps)
 log_info "[3/4] Running setup and installing SSH key on remote..."
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" 'sudo -n true 2>/dev/null'; then
+    log_warn "  '$REMOTE_USER' does not have passwordless sudo. Will prompt for password."
+    log_warn "  If this fails, re-run with an admin user: REMOTE_USER=<admin-user>"
+fi
+ssh "${SSH_SUDO_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "
     set -e
     cd $REMOTE_DIR
-    sudo bash scripts/chroot_jail/jail_set.sh $HOST_NAME
+    sudo bash scripts/workspace/workspace_up.sh $HOST_NAME
     sudo bash scripts/ssh_key/add.sh $HOST_NAME
 "
 
-# 4. Reload sshd — only needed for chroot mode (adds Match User block to sshd_config)
-if [ "$ISOLATION" = "chroot" ]; then
+# 4. Reload sshd — required for container mode (adds Match User block to sshd_config)
+if [ "$ISOLATION" = "container" ]; then
     log_info "[4/4] Reloading sshd on remote..."
-    if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" \
+    if ssh "${SSH_SUDO_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" \
         'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
          sudo systemctl reload sshd 2>/dev/null \
          || sudo systemctl reload ssh 2>/dev/null \

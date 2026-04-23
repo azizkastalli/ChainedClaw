@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # OpenClaw Uninstallation Script
-# Removes containers, chroot jails, SSH keys, and data directories
+# Removes containers, workspace containers on configured hosts, SSH keys, and data directories
 # Keeps Docker images for potential reinstallation
 #
 # Don't use set -e here - we want to continue even if some cleanup steps fail
@@ -36,7 +36,7 @@ confirm_uninstall() {
     echo "This will remove:"
     echo "  - Docker containers (agent-dev, agent-dev-nginx)"
     echo "  - Docker volumes"
-    echo "  - Chroot jails for all configured hosts"
+    echo "  - Workspace containers for all locally-configured hosts"
     echo "  - SSH keys (project .ssh/ directory)"
     echo "  - Dashboard auth (nginx/.htpasswd)"
     echo "  - Project .ssh directory"
@@ -74,46 +74,38 @@ except Exception:
     fi
 }
 
-# Tear down chroot for all configured hosts
-teardown_chroot() {
-    log_step "Tearing down chroot jails..."
-    
+# Tear down workspace for all locally-configured hosts.
+# Only applies when the host is set up on THIS machine (not a remote SSH target);
+# for remote hosts use `make remote-clean HOST=<name> REMOTE_KEY=<key>`.
+teardown_workspaces() {
+    log_step "Tearing down local workspaces..."
+
     HOSTS=$(get_configured_hosts)
-    
+
     if [ -z "$HOSTS" ]; then
-        log_info "No hosts found in config.json. Checking for existing chroot..."
-        # Try to detect existing chroot from .env
-        if [ -f "$PROJECT_ROOT/.env" ]; then
-            source "$PROJECT_ROOT/.env"
-            if [ -n "${CHROOT_BASE:-}" ] && [ -d "$CHROOT_BASE" ]; then
-                log_info "Found chroot at $CHROOT_BASE"
-                # Try to clean up using jail_break.sh with a dummy host
-                # This is a fallback - jail_break.sh should handle partial cleanup
-                log_warn "Manual cleanup may be required for $CHROOT_BASE"
-            fi
-        fi
+        log_info "No hosts found in config.json."
         return 0
     fi
-    
+
     for HOST in $HOSTS; do
         if [ -n "$HOST" ]; then
-            log_info "Tearing down chroot for host: $HOST"
-            if [ -f "$SCRIPT_DIR/chroot_jail/jail_break.sh" ]; then
-                # Use set +e to prevent script exit on jail_break failure
+            log_info "Tearing down workspace for host: $HOST"
+            if [ -f "$SCRIPT_DIR/workspace/workspace_down.sh" ]; then
                 set +e
-                 bash "$SCRIPT_DIR/chroot_jail/jail_break.sh" "$HOST"
+                bash "$SCRIPT_DIR/workspace/workspace_down.sh" "$HOST"
                 result=$?
+                bash "$SCRIPT_DIR/ssh_key/remove.sh" "$HOST" >/dev/null 2>&1 || true
                 set -e
                 if [ $result -eq 0 ]; then
                     NEED_SSHD_RELOAD=true
                 else
-                    log_warn "Failed to tear down chroot for $HOST (exit code: $result)"
+                    log_warn "Workspace teardown for $HOST exited $result (may already be clean)"
                 fi
             fi
         fi
     done
-    
-    log_info "Chroot teardown complete"
+
+    log_info "Workspace teardown complete"
 }
 
 # Stop and remove Docker containers
@@ -193,7 +185,7 @@ show_summary() {
     echo ""
     echo "Removed:"
     echo "  ✓ Docker containers and volumes"
-    echo "  ✓ Chroot jails"
+    echo "  ✓ Local workspace containers"
     echo "  ✓ SSH keys"
     echo "  ✓ Dashboard authentication"
     echo ""
@@ -211,8 +203,8 @@ show_summary() {
 # Main uninstallation flow
 main() {
     confirm_uninstall
-    
-    teardown_chroot
+
+    teardown_workspaces
     remove_containers
     remove_ssh_keys
     remove_dashboard_auth

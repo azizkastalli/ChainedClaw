@@ -1,18 +1,16 @@
 #!/bin/bash
 #
-# Remove the openclaw SSH key.
+# Remove the openclaw SSH key from AGENT_USER's authorized_keys.
 #
-# Isolation modes (set per-host in config.json):
-#   chroot        — removes from chroot + real home (default)
-#   restricted_key — removes from real home only
+# Targets only the line carrying our "openclaw-agent-<host>" marker — does not
+# touch any other keys the operator may have added for this user.
 #
-# Usage: remove.sh [host-name]
+# Usage: remove.sh <host-name>
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../../.env"
-CONFIG_JSON="$SCRIPT_DIR/../../config.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -28,42 +26,33 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 source "$ENV_FILE"
 
-# Read isolation mode from config.json (default: chroot)
-HOST_NAME="${1:-}"
-ISOLATION="chroot"
-if [ -n "$HOST_NAME" ] && [ -f "$CONFIG_JSON" ] && command -v jq &>/dev/null; then
-    _iso=$(jq -r --arg name "$HOST_NAME" \
-        '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
-        "$CONFIG_JSON" 2>/dev/null)
-    [ -n "$_iso" ] && [ "$_iso" != "null" ] && ISOLATION="$_iso"
-fi
+HOST_NAME="${1:-default}"
+KEY_MARKER="openclaw-agent-${HOST_NAME}"
 
 echo "=== Removing SSH key ==="
-echo "  User:  $AGENT_USER"
-echo "  Mode:  $ISOLATION"
+echo "  User:   $AGENT_USER"
+echo "  Marker: $KEY_MARKER"
 
-# ── chroot mode ────────────────────────────────────────────────────────────────
-if [ "$ISOLATION" = "chroot" ]; then
-    CHROOT_SSH_DIR="$CHROOT_BASE/home/$AGENT_USER/.ssh"
-    if [ -d "$CHROOT_SSH_DIR" ]; then
-        rm -f "$CHROOT_SSH_DIR/authorized_keys"
-        log_info "Removed: $CHROOT_SSH_DIR/authorized_keys"
-    else
-        log_warn "Chroot .ssh directory not found: $CHROOT_SSH_DIR"
-    fi
+AUTH_KEYS="/home/$AGENT_USER/.ssh/authorized_keys"
+if [ ! -f "$AUTH_KEYS" ]; then
+    log_warn "No authorized_keys file at $AUTH_KEYS — nothing to remove"
+    exit 0
 fi
 
-# Both modes: remove from real home
-REAL_SSH_DIR="/home/$AGENT_USER/.ssh"
-if [ -d "$REAL_SSH_DIR" ]; then
-    rm -f "$REAL_SSH_DIR/authorized_keys"
-    log_info "Removed: $REAL_SSH_DIR/authorized_keys"
+if grep -q " $KEY_MARKER\$" "$AUTH_KEYS" 2>/dev/null; then
+    sed -i "/ $KEY_MARKER\$/d" "$AUTH_KEYS"
+    log_info "Removed line with marker '$KEY_MARKER' from $AUTH_KEYS"
 else
-    log_warn "Real home .ssh directory not found: $REAL_SSH_DIR"
+    log_warn "No line with marker '$KEY_MARKER' found in $AUTH_KEYS"
+fi
+
+# Clean up legacy chroot path if present (harmless if absent).
+LEGACY_CHROOT_AUTH="${CHROOT_BASE:-}/home/$AGENT_USER/.ssh/authorized_keys"
+if [ -n "${CHROOT_BASE:-}" ] && [ -f "$LEGACY_CHROOT_AUTH" ]; then
+    rm -f "$LEGACY_CHROOT_AUTH"
+    log_info "Removed legacy chroot authorized_keys"
 fi
 
 echo ""
 echo "=== SSH Key Removed ==="
-if [ "$ISOLATION" = "chroot" ]; then
-    echo "Run 'systemctl reload sshd' to apply changes."
-fi
+echo "Run 'systemctl reload sshd' to apply changes."

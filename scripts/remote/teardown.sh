@@ -40,6 +40,7 @@ fi
 HOST_NAME="$1"
 SSH_KEY="$2"
 REMOTE_USER="${3:-$(whoami)}"
+PURGE="${4:-}"   # pass --purge to also remove AGENT_USER and rootless Docker
 REMOTE_DIR="/tmp/agent-dev-scripts"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -74,9 +75,9 @@ REMOTE_PORT=$(jq -r --arg name "$HOST_NAME" \
     "$PROJECT_ROOT/config.json")
 
 ISOLATION=$(jq -r --arg name "$HOST_NAME" \
-    '.ssh_hosts[] | select(.name == $name) | .isolation // "chroot"' \
+    '.ssh_hosts[] | select(.name == $name) | .isolation // "container"' \
     "$PROJECT_ROOT/config.json")
-[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="chroot"
+[ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="container"
 
 if [ -z "$REMOTE_IP" ] || [ "$REMOTE_IP" = "null" ]; then
     log_error "Host '$HOST_NAME' not found in config.json"
@@ -88,6 +89,15 @@ SSH_OPTS=(
     -p "$REMOTE_PORT"
     -o StrictHostKeyChecking=accept-new
     -o BatchMode=yes
+    -o ConnectTimeout=15
+    -o ServerAliveInterval=10
+    -o ServerAliveCountMax=3
+)
+SSH_SUDO_OPTS=(
+    -i "$SSH_KEY"
+    -p "$REMOTE_PORT"
+    -tt
+    -o StrictHostKeyChecking=accept-new
     -o ConnectTimeout=15
     -o ServerAliveInterval=10
     -o ServerAliveCountMax=3
@@ -104,8 +114,8 @@ fi
 if ! ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "test -d $REMOTE_DIR"; then
     log_error "$REMOTE_DIR not found on $REMOTE_IP"
     log_error "Was remote-setup run for this host? Or was the directory removed manually?"
-    log_error "If removed manually, SSH into the remote and run jail_break.sh directly:"
-    log_error "  bash scripts/chroot_jail/jail_break.sh $HOST_NAME"
+    log_error "If removed manually, SSH into the remote and run workspace_down.sh directly:"
+    log_error "  bash scripts/workspace/workspace_down.sh $HOST_NAME"
     exit 1
 fi
 
@@ -124,16 +134,21 @@ echo ""
 
 # 1. Run teardown
 log_info "[1/3] Running teardown on remote..."
-ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" 'sudo -n true 2>/dev/null'; then
+    log_warn "  '$REMOTE_USER' does not have passwordless sudo. Will prompt for password."
+    log_warn "  If this fails, re-run with an admin user: REMOTE_USER=<admin-user>"
+fi
+ssh "${SSH_SUDO_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "
     set -e
     cd $REMOTE_DIR
-    sudo bash scripts/chroot_jail/jail_break.sh $HOST_NAME
+    sudo bash scripts/workspace/workspace_down.sh $HOST_NAME $PURGE
+    sudo bash scripts/ssh_key/remove.sh $HOST_NAME
 "
 
-# 2. Reload sshd — only needed for chroot mode (removes Match User block from sshd_config)
-if [ "$ISOLATION" = "chroot" ]; then
+# 2. Reload sshd — required for container mode (removes Match User block from sshd_config)
+if [ "$ISOLATION" = "container" ]; then
     log_info "[2/3] Reloading sshd on remote..."
-    if ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" \
+    if ssh "${SSH_SUDO_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" \
         'export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
          sudo systemctl reload sshd 2>/dev/null \
          || sudo systemctl reload ssh 2>/dev/null \
@@ -160,5 +175,5 @@ log_info "  Removed $REMOTE_DIR"
 
 echo ""
 log_info "=== Remote teardown complete ==="
-log_info "  Chroot jail for '$HOST_NAME' removed from $REMOTE_IP"
+log_info "  Workspace container for '$HOST_NAME' removed from $REMOTE_IP"
 echo ""

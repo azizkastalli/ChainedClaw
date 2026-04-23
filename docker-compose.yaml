@@ -145,8 +145,8 @@ services:
   hermes:
     profiles: [hermes]
     build:
-      context: ./agents/hermes
-      dockerfile: Dockerfile
+      context: ./agents
+      dockerfile: hermes/Dockerfile
     container_name: agent-dev
     user: root
     cap_drop:

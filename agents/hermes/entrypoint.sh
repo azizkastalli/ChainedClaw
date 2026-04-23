@@ -105,6 +105,8 @@ try:
         port         = host.get('port', 22)
         user         = host.get('user', 'root')
         strict_check = host.get('strict_host_key_checking', True)
+        isolation    = host.get('isolation', 'container')
+        paths        = host.get('project_paths', [])
 
         print(f"Host {name}")
         print(f"    HostName {hostname}")
@@ -112,6 +114,15 @@ try:
         print(f"    User {user}")
         print(f"    IdentityFile {KEY_FILE}")
         print(f"    StrictHostKeyChecking {'yes' if strict_check else 'no'}")
+
+        if paths:
+            if isolation == 'container':
+                for p in paths:
+                    print(f"    # workspace: ~/workspace/{os.path.basename(p)}")
+            else:
+                for p in paths:
+                    print(f"    # path: {p}")
+
         print("")
 except FileNotFoundError:
     print(f"# Config file not found: {CONFIG_JSON}", file=sys.stderr)
