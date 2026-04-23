@@ -8,8 +8,15 @@
 # host), any Docker-in-Docker containers launched via the rootless daemon, and
 # native processes on the host.
 #
-# Allowed: loopback, established connections, DNS, HTTPS to package registries.
-# Everything else from AGENT_USER is dropped.
+# Allowed: loopback, established connections, DNS, HTTP (80), HTTPS (443).
+# All other ports from AGENT_USER are dropped.
+#
+# Note: HTTP/HTTPS are allowed to any destination because Docker image pulls
+# go through CDN subdomains (cdn01.quay.io, S3, Akamai, Cloudflare, etc.)
+# that are dynamic and cannot be reliably allowlisted by IP. The container-
+# level security boundary is docker_proxy.py (bind-mount allowlist,
+# no --privileged, no network=host). This filter's value is blocking all
+# non-web egress ports (raw TCP, custom protocols, etc.).
 #
 # Enable per-host by setting "egress_filter": true in config.json.
 #
@@ -86,28 +93,13 @@ iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -m state --state ESTABLIS
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p udp --dport 53 -j RETURN
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 53 -j RETURN
 
-# HTTPS to domains listed in config.json allowed_domains
-CONFIG_JSON="$SCRIPT_DIR/../../config.json"
-if [ ! -f "$CONFIG_JSON" ]; then
-    log_error "config.json not found at $CONFIG_JSON — cannot build egress allowlist"
-    exit 1
-fi
-while IFS= read -r domain; do
-    [ -z "$domain" ] && continue
-    ips=$(dig +short A "$domain" 2>/dev/null || true)
-    for ip in $ips; do
-        if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-            iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -d "$ip" -p tcp --dport 443 -j RETURN
-            log_info "  Allowed HTTPS to $domain ($ip)"
-        fi
-    done
-done < <(python3 -c "
-import json
-with open('$CONFIG_JSON') as f:
-    c = json.load(f)
-for d in c.get('allowed_domains', []):
-    print(d)
-" 2>/dev/null)
+# HTTP + HTTPS to any destination — CDN-backed registries (quay.io, Docker Hub,
+# ghcr.io, etc.) serve image blobs from dynamic CDN subdomains and S3 buckets
+# that cannot be enumerated by IP. Blocking by port is still meaningful: it
+# prevents raw TCP exfiltration, custom-protocol C2, and non-web egress.
+iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 80  -j RETURN
+iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 443 -j RETURN
+log_info "  Allowed HTTP (80) and HTTPS (443) to any destination"
 
 # Default drop for AGENT_USER
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -j DROP
@@ -119,6 +111,6 @@ fi
 
 echo ""
 log_info "Egress filter active (UID $AGENT_UID)"
-log_info "  Allowed: loopback, established, DNS (53), HTTPS to registries"
-log_info "  Blocked: all other outbound from $AGENT_USER"
+log_info "  Allowed: loopback, established, DNS (53), HTTP (80), HTTPS (443)"
+log_info "  Blocked: all other ports from $AGENT_USER"
 log_info "To remove: $0 $HOST_NAME --flush"
