@@ -130,6 +130,11 @@ for domain in \
     resolve_domain "$domain" true
 done
 
+# Common container registries beyond Docker Hub (non-strict — warn and skip on failure)
+for domain in ghcr.io quay.io; do
+    resolve_domain "$domain" false
+done
+
 # Extra domains from EXTRA_ALLOWED_DOMAINS env var (space-separated, non-fatal)
 # Set in docker-compose.yaml environment or .env:
 #   EXTRA_ALLOWED_DOMAINS="api.openai.com my-litellm.example.com"

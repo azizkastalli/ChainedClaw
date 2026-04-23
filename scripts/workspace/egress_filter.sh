@@ -87,7 +87,7 @@ iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p udp --dport 53 -j RETU
 iptables -A "$CHAIN" -m owner --uid-owner "$AGENT_UID" -p tcp --dport 53 -j RETURN
 
 # HTTPS to common package registries (resolve each domain, allow each A record)
-for domain in registry.npmjs.org pypi.org files.pythonhosted.org api.github.com github.com ghcr.io registry-1.docker.io auth.docker.io production.cloudflare.docker.com; do
+for domain in registry.npmjs.org pypi.org files.pythonhosted.org api.github.com github.com ghcr.io registry-1.docker.io auth.docker.io production.cloudflare.docker.com quay.io; do
     ips=$(dig +short A "$domain" 2>/dev/null || true)
     for ip in $ips; do
         if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
