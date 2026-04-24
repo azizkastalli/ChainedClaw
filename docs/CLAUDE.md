@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-**OpenClaw** (also called ChainedClaw) is a Docker-based AI agent platform with an SSH bridge. It runs AI agents (OpenClaw, Claude Code, or Hermes) in hardened containers with a defense-in-depth security model designed around one assumption: **the agent container may be compromised at any time via prompt injection**. Every security layer is built to limit blast radius given that assumption.
+**OpenClaw** is security infrastructure for running AI agents in zero-trust isolation. Any agent — Claude Code, OpenClaw gateway, Hermes, or a custom agent — runs inside a hardened container with egress control, SSH-gated workspace access, and a defense-in-depth model built around one assumption: **the agent container may be compromised at any time via prompt injection**. Every security layer is built to limit blast radius given that assumption.
 
 ---
 
@@ -31,11 +31,11 @@ make preflight                  # verify all security layers are active (seccomp
 make shell                      # opens bash as the agent user with SSH_AUTH_SOCK set
 
 # Local host workspace setup
-make setup HOST=my-server       # full: workspace container + key + sshd reload
-make test HOST=my-server        # verify SSH (should print "dev-bot")
+make workspace-setup HOST=my-server       # full: workspace container + key + sshd reload
+make test HOST=my-server                  # verify SSH (should print "dev-bot")
 
 # Remote host workspace setup
-make remote-setup HOST=my-server REMOTE_KEY=/path/to/admin-key [REMOTE_USER=ubuntu]
+make workspace-setup HOST=my-server REMOTE_KEY=/path/to/admin-key [REMOTE_USER=ubuntu]
 make test HOST=my-server
 
 # Key management
@@ -129,7 +129,7 @@ API keys (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`) are passe
 |------|------|
 | `config.json` | SSH hosts, port-forward allowlists, extra egress domains |
 | `.env` | Ports, container names, UIDs, API keys — never committed |
-| `scripts/entrypoint.sh` | Shared container boot script for openclaw and claudecode |
+| `scripts/entrypoint.sh` | Shared container boot script (used by openclaw and claudecode; hermes has its own) |
 | `agents/init-firewall.sh` | Internal egress firewall (ipset + iptables, runs at container start) |
 | `scripts/firewall/setup_firewall.sh` | Host FORWARD chain firewall (applied by `make up`) |
 | `scripts/workspace/workspace_up.sh` | Provisions workspace container + sshd Match block on target host |

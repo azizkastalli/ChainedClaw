@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Tear down chroot jail on a remote SSH host
-# Runs jail_break.sh on the remote using the previously copied scripts
+# Tear down workspace on a remote SSH host
+# Runs workspace_down.sh on the remote using the previously copied scripts
 # in /tmp/agent-dev-scripts, then removes that directory.
 #
 # hostname and port are read from config.json using the host name.

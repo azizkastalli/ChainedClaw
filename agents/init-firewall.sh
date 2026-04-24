@@ -1,5 +1,5 @@
 #!/bin/bash
-# Internal firewall for agent containers (openclaw / claudecode / hermes).
+# Internal firewall for OpenClaw agent containers (any agent mode).
 # Restricts outbound HTTPS to domains listed in config.json allowed_domains.
 # SSH egress is allowed to hosts listed in config.json ssh_hosts.
 # config.json is the single source of truth — no domains are hardcoded here.
@@ -142,7 +142,7 @@ else
     echo "WARN: /config.json not found — no HTTPS egress allowed (agent API calls will fail)"
 fi
 
-# Get host network from default route and allow it (needed for SSH to chroot hosts)
+# Get host network from default route and allow it (needed for SSH to workspace hosts)
 HOST_IP=$(ip route | grep default | cut -d" " -f3)
 if [ -z "$HOST_IP" ]; then
     echo "ERROR: Failed to detect host IP"

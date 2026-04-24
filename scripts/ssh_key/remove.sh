@@ -46,13 +46,6 @@ else
     log_warn "No line with marker '$KEY_MARKER' found in $AUTH_KEYS"
 fi
 
-# Clean up legacy chroot path if present (harmless if absent).
-LEGACY_CHROOT_AUTH="${CHROOT_BASE:-}/home/$AGENT_USER/.ssh/authorized_keys"
-if [ -n "${CHROOT_BASE:-}" ] && [ -f "$LEGACY_CHROOT_AUTH" ]; then
-    rm -f "$LEGACY_CHROOT_AUTH"
-    log_info "Removed legacy chroot authorized_keys"
-fi
-
 echo ""
 echo "=== SSH Key Removed ==="
 echo "Run 'systemctl reload sshd' to apply changes."

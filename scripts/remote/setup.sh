@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Set up chroot jail on a remote SSH host
+# Set up workspace on a remote SSH host
 # Copies scripts, config, .env, and public key to the remote then runs
-# jail_set.sh and add.sh remotely.
+# workspace_up.sh and add.sh remotely.
 #
 # hostname and port are read from config.json using the host name.
 #
@@ -190,7 +190,7 @@ if [ "$ISOLATION" = "container" ]; then
     else
         log_error "  Failed to reload sshd on remote."
         log_error "  SSH in manually and run: service ssh reload  (or: kill -HUP \$(pgrep -f sshd))"
-        log_error "  The chroot jail will NOT be active until sshd reloads."
+        log_error "  The workspace sshd block will NOT be active until sshd reloads."
         exit 1
     fi
 else
@@ -200,5 +200,5 @@ fi
 echo ""
 log_info "=== Remote setup complete ==="
 log_info "  Test connection : make test HOST=$HOST_NAME"
-log_info "  To uninstall   : make remote-clean HOST=$HOST_NAME REMOTE_KEY=$SSH_KEY${3:+ REMOTE_USER=$REMOTE_USER}"
+log_info "  To uninstall   : make workspace-clean HOST=$HOST_NAME REMOTE_KEY=$SSH_KEY${3:+ REMOTE_USER=$REMOTE_USER}"
 echo ""

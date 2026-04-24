@@ -10,7 +10,7 @@
 # Used by:
 #   - workspace_up.sh: the workspace container itself runs under this daemon
 #     so its egress packets appear as AGENT_USER UID (preserves UID-keyed
-#     egress filter semantics from the old chroot setup).
+#     egress filter matches on AGENT_USER UID).
 #   - docker_access: true hosts: the same socket is bind-mounted into the
 #     workspace container so the agent can docker build/run on the host.
 #

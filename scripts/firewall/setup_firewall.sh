@@ -512,7 +512,7 @@ if [ "$FLUSH_MODE" = true ]; then
         exit 1
     fi
     flush_openclaw_rules
-    # Also flush the chroot egress filter chain (set up by chroot_egress_filter.sh)
+    # Also flush the workspace egress filter chain (set up by egress_filter.sh)
     iptables -D OUTPUT -j AGENT-CHROOT-EGRESS 2>/dev/null || true
     iptables -F AGENT-CHROOT-EGRESS 2>/dev/null || true
     iptables -X AGENT-CHROOT-EGRESS 2>/dev/null || true

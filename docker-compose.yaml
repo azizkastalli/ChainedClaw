@@ -1,22 +1,23 @@
 services:
 
-  # ── OpenClaw agent ────────────────────────────────────────────────────────────
+  # ── OpenClaw gateway agent ─────────────────────────────────────────────────────
   # Start with: make up AGENT=openclaw
   #
-  # Security posture (openclaw is treated as LESS trusted than claudecode):
+  # Security posture (openclaw agent is treated as LESS trusted — runs third-party
+  # user-supplied prompts, so read_only: true is enforced):
   #   - user: root            — needed to run iptables directly (cap_drop strips SETUID/SETGID, sudo unusable)
-  #   - init-firewall.sh      — internal egress allowlist (same as claudecode)
+  #   - init-firewall.sh      — internal egress allowlist (same as claudecode/hermes)
   #   - FORWARD chain         — SSH egress restricted to config.json hosts only
   #   - cap_drop: ALL         — zero Linux capabilities by default
   #   - cap_add: NET_ADMIN/NET_RAW — needed for iptables in entrypoint (root phase only)
-  #   - cap_add: SETUID/SETGID    — needed for gosu root→openclaw drop; cleared from effective set after exec
+  #   - cap_add: SETUID/SETGID    — needed for gosu root→openclaw user drop; cleared after exec
   #   - no-new-privileges         — inherited by agent after drop; prevents capability re-gain
   #   - seccomp profile           — blocks dangerous syscalls (mount, unshare, ptrace, bpf, etc.)
-  #   - tmpfs /tmp /run ~/.ssh    — RAM-backed, wiped on restart; chowned to openclaw before drop
+  #   - tmpfs /tmp /run ~/.ssh    — RAM-backed, wiped on restart; chowned to agent user before drop
   #
   # Note: init-firewall.sh allowlist covers npm, GitHub, Anthropic API, Sentry,
-  # Statsig. If openclaw needs additional endpoints (Telegram, custom APIs), add
-  # them to agents/init-firewall.sh or extend via EXTRA_ALLOWED_DOMAINS (future).
+  # Statsig. To add extra endpoints (Telegram, custom APIs) for any agent, add
+  # them to the allowed_domains array in config.json.
   openclaw:
     profiles: [openclaw]
     build:
@@ -71,7 +72,7 @@ services:
   # Start with: make up AGENT=claudecode
   #
   # Security posture (claudecode is more trusted — first-party Anthropic tool):
-  #   - init-firewall.sh      — same internal egress allowlist as openclaw
+  #   - init-firewall.sh      — same internal egress allowlist as all other agents
   #   - FORWARD chain         — SSH egress restricted to config.json hosts only
   #   - user: root (entrypoint) → node (agent) — root for iptables, gosu drops to node before exec
   #   - cap_drop: ALL         — zero Linux capabilities by default

@@ -2,7 +2,7 @@
 # This avoids downloading Chromium during build (network blocked)
 FROM mcr.microsoft.com/playwright:v1.50.0-noble AS playwright-base
 
-# Stage 2: Build openclaw with Chromium
+# Stage 2: Build openclaw agent image with Chromium
 FROM ghcr.io/openclaw/openclaw:latest
 
 # Install tools required by init-firewall.sh and entrypoint.sh.
@@ -44,8 +44,7 @@ RUN ln -s /home/openclaw/.cache/ms-playwright/chromium-1155/chrome-linux/chrome 
     chmod +x /home/openclaw/.cache/ms-playwright/chromium-1155/chrome-linux/chrome
 
 # Internal container firewall — restricts outbound to allowed domains only.
-# Same script as claudecode; extend EXTRA_ALLOWED_DOMAINS in docker-compose if
-# openclaw needs additional endpoints (e.g. Telegram, custom APIs).
+# Same script used by all agents. Add extra endpoints via allowed_domains in config.json.
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 RUN chmod +x /usr/local/bin/init-firewall.sh
 COPY agent_instruct.md /home/openclaw/agent_instruct.md

@@ -1,7 +1,6 @@
 # OpenClaw Security Model
 
-The openclaw container is treated as **fully compromised at all times**. Every layer
-is designed around: *"If the agent is hijacked via prompt injection, what can it reach?"*
+The agent container is treated as **fully compromised at all times** — regardless of which agent runs inside. Every layer is designed around: *"If the agent is hijacked via prompt injection, what can it reach?"*
 
 ---
 
@@ -10,22 +9,23 @@ is designed around: *"If the agent is hijacked via prompt injection, what can it
 | Can | Cannot |
 |-----|--------|
 | SSH to hosts in `config.json` | SSH to hosts not in `config.json` (FORWARD chain) |
-| Access `project_paths` on those hosts | Access other host filesystem paths (chroot) |
+| Access `project_paths` on those hosts | Access paths outside `project_paths` (workspace container namespace) |
 | Forward ports listed in `forward_ports` | Forward unlisted ports (`PermitOpen`) |
-| Use rootless Docker on remote hosts (if `docker_access: true`) | Reach host Docker daemon (rootless Docker uses user namespace) |
+| Use filtered Docker access on remote hosts (if `docker_access: true`) | Reach host Docker daemon (proxy blocks privileged operations) |
 | Reach npm, GitHub, Anthropic API | Reach arbitrary internet IPs (internal firewall) |
 | — | Steal SSH private key (loaded into `ssh-agent`, key file `chmod 000`) |
 | — | Replace SSH keys (`.ssh-keys` is read-only) |
-| — | Write to container filesystem (openclaw: `read_only: true`) |
+| — | Write to container filesystem (openclaw agent: `read_only: true`) |
 | — | Exfiltrate data via DNS tunneling (DNS restricted to Docker resolver) |
 
 ---
 
 ## Security Layers
 
-All three agents share the same base layers. openclaw carries one additional restriction
-(`read_only: true`) because it runs third-party code; claudecode and hermes-agent are
-treated as more trusted (first-party / known-source tools).
+All agents share the same base security layers. The openclaw agent carries one additional restriction
+(`read_only: true`) because it runs third-party code; claudecode and hermes are
+treated as more trusted (first-party / known-source tools). Custom agents can opt into
+the same hardening by setting `read_only: true` in their service definition.
 
 ### Container Hardening
 
@@ -42,10 +42,10 @@ treated as more trusted (first-party / known-source tools).
 | No host filesystem mounts | ✅ | ✅ | ✅ | Host files unreachable |
 | Internal firewall (init-firewall.sh) | ✅ | ✅ | ✅ | Unrestricted internet egress |
 
-**Note on openclaw `read_only: true`:** tmpfs covers `/tmp`, `/run`, `~/.ssh`. If the
+**Note on `read_only: true` (openclaw agent):** tmpfs covers `/tmp`, `/run`, `~/.ssh`. If the
 agent needs additional write paths, add them as tmpfs entries in docker-compose.yaml.
 
-**Note on claudecode / hermes-agent:** `read_only` and `no-new-privileges` are not set —
+**Note on claudecode / hermes:** `read_only` and `no-new-privileges` are not set —
 the agent user needs to write to its runtime directories (config, venv cache, session data).
 Host isolation is provided entirely by `cap_drop: ALL` + seccomp profile.
 
@@ -63,7 +63,7 @@ key file is `chmod 000`. This means:
 
 Runs inside each agent's own network namespace on container start. Restricts all outbound
 connections to an allowlist: npm registry, GitHub, `api.anthropic.com`, Sentry, Statsig.
-SSH outbound is also allowed (needed for chroot host access).
+SSH outbound is also allowed (needed for workspace host access).
 
 **DNS is restricted to Docker's internal resolver** (`127.0.0.11` only). This prevents
 DNS exfiltration tunnels where a compromised agent encodes data in DNS queries to
@@ -78,14 +78,14 @@ The core allowlist is defined in `agents/init-firewall.sh`. To allow additional 
 Applied automatically on `make up` / `make restart`. Restricts SSH egress from the
 container to IPs listed in `config.json`. Rules persist across reboots.
 
-### Host Chroot (SSH path)
+### Workspace Container / SSH Path (`container` isolation)
 
 | Control | Effect |
 |---|---|
-| `ChrootDirectory` | Agent sees only `project_paths` |
-| SSH/network tools stripped | Cannot lateral-move to other hosts |
-| `docker` excluded from chroot by default | Cannot reach host Docker daemon |
-| `/proc`, `/sys` read-only | No kernel manipulation |
+| Rootless Docker container | Agent sees only bind-mounted `project_paths` via filesystem namespace |
+| SSH/network tools stripped from image | Cannot lateral-move to other hosts |
+| Docker proxy filters operations | Cannot reach host Docker daemon; `--privileged` / `network=host` / dangerous caps blocked |
+| `/proc`, `/sys` not mounted | No kernel manipulation surface |
 | `AllowTcpForwarding local` or `no` | Controlled by `forward_ports` per host |
 | `PermitOpen localhost:PORT` | Port allowlist enforced at protocol level |
 | `PermitTunnel no` | No VPN tunnelling |
@@ -93,79 +93,65 @@ container to IPs listed in `config.json`. Rules persist across reboots.
 | `ClientAliveCountMax 3` | — |
 | `MaxSessions 3` | Limits concurrent SSH sessions |
 
-### Project Directory Permissions
+### `restricted_key` Isolation
 
-For the chroot user to write to project directories owned by a host user, `jail_set.sh`
-automatically:
+In `restricted_key` mode no workspace container is provisioned. The agent SSHes as
+`dev-bot` with a key restricted to `restrict,pty`. Access to `project_paths` is
+governed by `project_access` (ACL grants or copy).
 
-1. **Detects the host user's group** from the first `project_path` directory
-2. **Adds the chroot user to that group** (supplementary group membership)
-3. **Sets group-write permissions** on project directories (`chmod -R g+w`)
+> **Weaker than `container` mode.** ACL and copy modes do not provide filesystem
+> namespace isolation. World-readable directories (mode `755`) remain accessible to
+> `dev-bot` regardless of ACL grants. Use `container` isolation for machines that hold
+> personal or sensitive data outside `project_paths`.
 
-This allows the agent to edit files while maintaining security:
-- The agent remains isolated in the chroot (cannot access other host paths)
-- File ownership stays with the host user (not transferred to agent)
-- Group membership is the minimum privilege needed for write access
+### Workspace Egress Filter (opt-in)
 
-**Prerequisite:** Project directories must be owned by a group that the host user belongs to
-(typically the user's primary group, e.g., `aziz:aziz`). If project directories have different
-ownership, you may need to manually:
-```bash
-sudo chown -R <host-user>:<host-user> /path/to/project
-sudo chmod -R g+w /path/to/project
-```
+**Per-host config:** `"egress_filter": true` in `config.json`
 
-`PermitOpen` is the definitive port-forward enforcement — the remote sshd rejects
-requests to any unlisted destination regardless of what the client sends.
-
-### Chroot Egress Filter (opt-in)
-
-**Per-host config:** `"chroot_egress_filter": true` in `config.json`
-
-When enabled, `scripts/chroot_jail/chroot_egress_filter.sh` installs iptables rules
-on the remote host that restrict outbound traffic from the chroot user's UID:
+When enabled, `scripts/workspace/egress_filter.sh` installs iptables rules on the
+remote host that restrict outbound traffic from the workspace user's UID:
 
 | Allowed | Blocked |
 |---------|---------|
-| Loopback | All other outbound from chroot user |
-| Established connections (SSH return) | `curl`/`wget` to arbitrary URLs |
-| DNS (port 53) | Raw socket connections |
-| HTTPS to package registries (npm, PyPI, GitHub) | Data exfiltration via custom protocols |
+| DNS (port 53) | Arbitrary HTTP/HTTPS |
+| HTTPS to npm, PyPI, GitHub, Docker Hub, quay.io | Raw socket connections |
+| Established connections (SSH return traffic) | Data exfiltration via custom protocols |
 
-This closes the most critical remaining attack path: even though `curl`/`wget`/`python3`
-are available inside the chroot (needed for development work), the egress filter
-prevents them from reaching anything other than allowed destinations.
+This closes the most critical remaining attack path: even though `curl`, `wget`, and
+`python3` are available in the workspace (needed for development work), the egress
+filter prevents them from reaching anything other than allowed destinations.
 
-### Rootless Docker (opt-in)
+### Docker Access (opt-in)
 
 **Per-host config:** `"docker_access": true` in `config.json`
 
-When enabled, `scripts/chroot_jail/setup_rootless_docker.sh` sets up a rootless Docker
-daemon for the chroot user on the remote host:
+When enabled, a Docker socket proxy (`docker_proxy.py`) is started on the remote host.
+The agent accesses Docker through this proxy, which enforces:
 
 ```
-Agent container ──SSH──► chroot (dev-bot)
+Agent container ──SSH──► workspace (dev-bot)
                             │
-                            │ docker CLI
+                            │ docker CLI → DOCKER_HOST proxy socket
                             ▼
-                    /run/user/<uid>/docker.sock  ← bind-mount from host
+                    /run/openclaw/docker.sock  ← filtered proxy
                             │
-                    ┌───────▼──────────┐
-                    │ rootless dockerd │  ← runs as dev-bot OUTSIDE chroot
-                    │ (user namespace) │     cannot reach host Docker
-                    └──────────────────┘     cannot run --privileged
+                    ┌───────▼──────────────┐
+                    │ docker_proxy.py      │  enforces:
+                    │ (runs as root)       │  • bind mounts: project_paths only
+                    └──────────────────────┘  • --privileged: blocked
+                            │               • network=host: blocked
+                            ▼               • dangerous caps: blocked
+                    /var/run/docker.sock (real socket)
 ```
 
 | Property | Effect |
 |----------|--------|
-| User namespace isolation | Container root ≠ host root |
-| No host Docker socket | Cannot affect host containers |
+| Proxy enforces bind-mount allowlist | Only `project_paths` can be mounted |
 | `--privileged` rejected | No host device access |
-| `--pid=host` rejected | No host process visibility |
 | `--network=host` rejected | No host network access |
+| Dangerous capabilities blocked | No kernel privilege escalation |
 
-**When `docker_access: false` (default):** The `docker` binary is excluded from the
-chroot's `/usr/bin` symlinks, preventing any Docker usage.
+The agent never has access to the real Docker socket.
 
 ### Dashboard (nginx)
 
@@ -207,11 +193,11 @@ Agent container (172.28.0.10) ──CDP──► Playwright (172.28.0.40:9222)
 ```
 prompt injection → agent
   → SSH to config.json hosts only (FORWARD chain firewall)
-    → project_paths only (chroot)
+    → project_paths only (workspace container filesystem namespace)
     → localhost:PORT only (PermitOpen)
-    → [if docker_access: true] rootless Docker only (user namespace — no host escape)
-    → [if chroot_egress_filter: true] DNS + registry HTTPS only (egress filter)
-    → [if chroot_egress_filter: false] ⚠️ curl/wget/python3 can reach any remote endpoint
+    → [if docker_access: true] filtered Docker only (proxy — no --privileged, no host bind mounts)
+    → [if egress_filter: true] DNS + registry HTTPS only (egress filter)
+    → [if egress_filter: false] ⚠️ curl/wget/python3 can reach any remote endpoint
   → internet: npm, GitHub, api.anthropic.com only (internal firewall)
     DNS: Docker resolver only (no DNS exfiltration)
     (add agent-specific domains to config.json allowed_domains as needed)
@@ -222,27 +208,41 @@ prompt injection → agent
 
 ## Known Limitations
 
-### HIGH — Network tools available in chroot (without egress filter)
+### HIGH — Network tools available in workspace (without egress filter)
 
-The chroot provides `curl`, `wget`, `python3`, and other network-capable tools that
-the agent needs for development work. Without the chroot egress filter, a compromised
-agent can use these to exfiltrate `project_paths` data to arbitrary internet endpoints
-from the remote server — bypassing both the container's internal firewall and the
-host FORWARD chain (those only restrict the container's network namespace).
+The workspace provides `curl`, `wget`, `python3`, and other network-capable tools that
+the agent needs for development work. Without the egress filter, a compromised agent
+can use these to exfiltrate `project_paths` data to arbitrary internet endpoints from
+the remote server — bypassing both the container's internal firewall and the host
+FORWARD chain (those only restrict the container's network namespace).
 
-**Mitigation:** Enable `chroot_egress_filter: true` in `config.json` per host.
-This restricts outbound from the chroot user to DNS + HTTPS to known registries only.
+**Mitigation:** Enable `egress_filter: true` in `config.json` per host.
+This restricts outbound from the workspace user to DNS + HTTPS to known registries only.
 
 ---
 
 ### HIGH — Unfiltered Docker image pulls (with docker_access: true)
 
-The agent can `docker pull` from any registry via rootless Docker. A malicious image
-runs inside the rootless user namespace (cannot escape host) but can mine CPU or
-stage data for exfiltration.
+The agent can `docker pull` from any registry via the Docker proxy. A malicious image
+runs as the workspace user (cannot escape host) but can mine CPU or stage data for
+exfiltration.
 
-**Fix:** Combine with `chroot_egress_filter: true` to restrict registry access to
+**Fix:** Combine with `egress_filter: true` to restrict registry access to
 `docker.io`, `ghcr.io`, `quay.io` only.
+
+---
+
+### HIGH — `restricted_key` mode: weaker filesystem isolation
+
+In `restricted_key` mode, ACL and copy modes do not prevent `dev-bot` from reading
+world-readable directories on the host (mode `755`). A compromised agent can browse
+other users' home directories if they are world-readable.
+
+**Mitigation:** Use `container` isolation for machines with personal or sensitive data.
+For `restricted_key` on shared machines, remove world-read from parent directories:
+```bash
+chmod o-r /home/youruser/Desktop
+```
 
 ---
 
@@ -259,11 +259,11 @@ of `0.0.0.0`, scoping the listener to inner containers only.
 
 ### MEDIUM — No audit trail
 
-No logging of SSH commands run in chroot, Docker images pulled, ports forwarded, or
+No logging of SSH commands run in workspace, Docker images pulled, ports forwarded, or
 external IPs contacted. A compromised agent leaves no forensic record.
 
-**Fix:** `LogLevel VERBOSE` in the sshd Match block (logs chroot commands on remote
-server). `auditd` on the openclaw host watching the container's cgroup. Ship logs to
+**Fix:** `LogLevel VERBOSE` in the sshd Match block (logs workspace commands on remote
+server). `auditd` on the host machine watching the container's cgroup. Ship logs to
 a write-once destination so the agent cannot tamper with them.
 
 ---
