@@ -26,7 +26,12 @@
       "egress_filter": true,
       "docker_access": false,
       "project_paths": [
-        "/path/to/your/project"
+        "/path/to/your/project",
+        {
+          "path": "/path/to/your/github-project",
+          "github_repo": "your-org/your-repo",
+          "github_write": false
+        }
       ],
       "forward_ports": []
     },
@@ -40,7 +45,11 @@
       "egress_filter": true,
       "docker_access": true,
       "project_paths": [
-        "/path/to/your/project"
+        {
+          "path": "/path/to/your/project",
+          "github_repo": "your-org/your-repo",
+          "github_write": true
+        }
       ],
       "forward_ports": [3000, 8080]
     },
@@ -52,7 +61,11 @@
       "strict_host_key_checking": true,
       "isolation": "restricted_key",
       "project_paths": [
-        "/workspace/my_project"
+        {
+          "path": "/workspace/my_project",
+          "github_repo": "your-org/my-project",
+          "github_write": false
+        }
       ]
     }
   ]

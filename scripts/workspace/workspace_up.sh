@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-# Provision a workspace container for a host defined in config.json.
-# Replaces the old chroot-jail setup with a rootless-Docker container.
+# Provision a workspace for a host defined in config.json.
+# Supports two isolation modes: container (rootless Docker) and restricted_key (ACL/copy).
 #
 # What this script does (all idempotent):
-#   1. Creates AGENT_USER as a regular host user (no chroot, no group hacks).
+#   1. Creates AGENT_USER as a regular host user.
 #   2. Installs and starts rootless Docker for AGENT_USER.
 #   3. Builds the agents-workspace image from agents/workspace/Dockerfile.
 #   4. Runs a long-lived container per host, with project_paths bind-mounted
@@ -74,6 +74,72 @@ ISOLATION=$(jq -r --arg name "$HOST_NAME" \
     "$CONFIG_JSON")
 [ -z "$ISOLATION" ] || [ "$ISOLATION" = "null" ] && ISOLATION="container"
 
+if [ "$ISOLATION" != "container" ] && [ "$ISOLATION" != "restricted_key" ]; then
+    log_error "Unknown isolation mode: '$ISOLATION'"
+    log_error "Valid values: container, restricted_key"
+    exit 1
+fi
+
+PROJECT_PATHS=$(jq -r --arg name "$HOST_NAME" \
+    '.ssh_hosts[] | select(.name == $name) | .project_paths[]
+     | if type == "string" then . else .path end' \
+    "$CONFIG_JSON")
+if [ -z "$PROJECT_PATHS" ]; then
+    log_error "No project_paths for host '$HOST_NAME' in config.json"
+    exit 1
+fi
+
+# Extract project_paths entries that carry a github_repo (object form only).
+GITHUB_REPOS=$(jq -c --arg name "$HOST_NAME" \
+    '[.ssh_hosts[] | select(.name == $name)
+      | .project_paths[]
+      | select(type == "object" and (.github_repo // "") != "")
+      | {path: .path, repo: .github_repo, slug: (.github_repo | gsub("/"; "-")), write: (.github_write // false)}
+     ]' \
+    "$CONFIG_JSON" 2>/dev/null || echo "[]")
+
+# ── Helper: grant AGENT_USER access to project_paths via ACL ──────────────────
+grant_project_acls() {
+    while IFS= read -r path; do
+        [ -z "$path" ] && continue
+        if [ ! -d "$path" ]; then
+            log_error "  project_path does not exist: $path"
+            log_error "  Create it on the host before running this script."
+            exit 1
+        fi
+        if ! su -s /bin/bash "$AGENT_USER" -c "test -r '$path' && test -w '$path'" 2>/dev/null; then
+            log_info "  Granting $AGENT_USER rw access to $path via ACL..."
+            if command -v setfacl &>/dev/null; then
+                # Grant traverse (x) on each parent dir so the user can
+                # resolve the path without being blocked mid-tree.
+                _parent="$path"
+                while [ "$_parent" != "/" ]; do
+                    _parent="$(dirname "$_parent")"
+                    if ! su -s /bin/bash "$AGENT_USER" -c "test -x '$_parent'" 2>/dev/null; then
+                        setfacl -m "u:$AGENT_USER:x" "$_parent"
+                        log_info "    traverse: $_parent"
+                    fi
+                done
+                # Grant rw on the project dir itself; default ACL covers new files.
+                setfacl -R  -m "u:$AGENT_USER:rwX" "$path"
+                setfacl -Rd -m "u:$AGENT_USER:rwX" "$path"
+                log_info "  ACL granted (new files will inherit access)"
+            else
+                log_warn "  setfacl not available — install acl package: apt install acl"
+                log_warn "  Falling back: adding $AGENT_USER to $(stat -c %G "$path") group..."
+                DIR_GROUP=$(stat -c %G "$path")
+                usermod -aG "$DIR_GROUP" "$AGENT_USER"
+                chmod -R g+rw "$path"
+                chmod g+x "$(dirname "$path")"
+                log_warn "  Group write set. SSH into $AGENT_USER may need a re-login to pick up group."
+            fi
+        else
+            log_info "  $path — OK"
+        fi
+    done <<< "$PROJECT_PATHS"
+}
+
+# ── restricted_key: user + ACLs + optional Docker proxy, no workspace container ─
 if [ "$ISOLATION" = "restricted_key" ]; then
     echo "=== Isolation: restricted_key (no workspace container) ==="
     if ! id "$AGENT_USER" &>/dev/null; then
@@ -82,22 +148,221 @@ if [ "$ISOLATION" = "restricted_key" ]; then
     else
         log_info "User $AGENT_USER already exists"
     fi
+    AGENT_UID=$(id -u "$AGENT_USER")
+    AGENT_HOME=$(eval echo "~$AGENT_USER")
+
+    _DOCKER_ACCESS=$(jq -r --arg name "$HOST_NAME" \
+        '.ssh_hosts[] | select(.name == $name) | .docker_access // false' \
+        "$CONFIG_JSON")
+    [ "$_DOCKER_ACCESS" = "null" ] && _DOCKER_ACCESS="false"
+
+    PROJECT_ACCESS=$(jq -r --arg name "$HOST_NAME" \
+        '.ssh_hosts[] | select(.name == $name) | .project_access // "acl"' \
+        "$CONFIG_JSON")
+    [ "$PROJECT_ACCESS" = "null" ] && PROJECT_ACCESS="acl"
+    if [ "$PROJECT_ACCESS" != "acl" ] && [ "$PROJECT_ACCESS" != "copy" ]; then
+        log_error "Unknown project_access: '$PROJECT_ACCESS' — valid values: acl, copy"
+        exit 1
+    fi
+
+    echo "  project_paths:"
+    echo "$PROJECT_PATHS" | while IFS= read -r p; do [ -n "$p" ] && echo "    - $p"; done
+    echo "  project_access: $PROJECT_ACCESS"
+    echo "  docker_access:  $_DOCKER_ACCESS"
+    echo ""
+
+    WORKSPACE_DIR="$AGENT_HOME/workspace"
+    mkdir -p "$WORKSPACE_DIR"
+
+    if [ "$PROJECT_ACCESS" = "copy" ]; then
+        # ── copy mode: project files are copied into dev-bot's own home ──────────
+        # dev-bot owns its copy entirely — no ACLs granted on source paths,
+        # no traverse grants on parent directories.
+        log_info "Copying project_paths into $WORKSPACE_DIR (project_access: copy)..."
+        while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if [ ! -d "$path" ]; then
+                log_error "  project_path does not exist: $path"
+                exit 1
+            fi
+            _dest="$WORKSPACE_DIR/$(basename "$path")"
+            if command -v rsync &>/dev/null; then
+                # rsync (no --delete): updates changed/new files from source
+                # without removing files the agent may have created.
+                rsync -a "$path/" "$_dest/"
+                log_info "  rsync: $path -> $_dest"
+            else
+                if [ ! -d "$_dest" ]; then
+                    cp -a "$path" "$_dest"
+                    log_info "  copy: $path -> $_dest"
+                else
+                    cp -au "$path/." "$_dest/"
+                    log_info "  update: $path -> $_dest"
+                fi
+            fi
+            chown -R "$AGENT_USER:$AGENT_USER" "$_dest"
+        done <<< "$PROJECT_PATHS"
+        log_info "  dev-bot owns all workspace files — source paths are untouched"
+    else
+        # ── acl mode: grant access to source paths + symlink into workspace ──────
+        log_info "Validating project_paths and granting ACLs..."
+        grant_project_acls
+
+        log_info "Creating workspace symlinks..."
+        while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            _link="$WORKSPACE_DIR/$(basename "$path")"
+            if [ -L "$_link" ] && [ "$(readlink "$_link")" = "$path" ]; then
+                log_info "  link OK: $_link"
+            else
+                ln -sfn "$path" "$_link"
+                log_info "  link: $_link -> $path"
+            fi
+        done <<< "$PROJECT_PATHS"
+    fi
+
+    chown "$AGENT_USER:$AGENT_USER" "$WORKSPACE_DIR"
+
+    # ── Deploy keys: generate and install SSH config for github_repo paths ───────
+    if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
+        echo ""
+        log_info "Setting up GitHub deploy keys (restricted_key mode)..."
+        bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
+
+        DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        AGENT_SSH_DIR="$AGENT_HOME/.ssh"
+        DEPLOY_KEYS_DEST="$AGENT_SSH_DIR/deploy_keys"
+
+        mkdir -p "$DEPLOY_KEYS_DEST"
+        chmod 700 "$AGENT_SSH_DIR" "$DEPLOY_KEYS_DEST"
+
+        # Copy deploy keys into dev-bot's .ssh directory (restricted_key has no container).
+        while IFS= read -r entry; do
+            SLUG=$(echo "$entry" | jq -r '.slug')
+            SRC_DIR="$DEPLOY_KEYS_BASE/$SLUG"
+            DEST_DIR="$DEPLOY_KEYS_DEST/$SLUG"
+            mkdir -p "$DEST_DIR"
+            cp "$SRC_DIR/id_ed25519"     "$DEST_DIR/id_ed25519"
+            cp "$SRC_DIR/id_ed25519.pub" "$DEST_DIR/id_ed25519.pub"
+            chmod 600 "$DEST_DIR/id_ed25519"
+            chmod 644 "$DEST_DIR/id_ed25519.pub"
+        done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+
+        chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_SSH_DIR"
+
+        # Write SSH config for github.com using all deploy keys.
+        SSH_CONFIG_FILE="$AGENT_SSH_DIR/config"
+        touch "$SSH_CONFIG_FILE"
+        # Remove any existing openclaw-managed github.com block.
+        sed -i '/# BEGIN openclaw github deploy keys/,/# END openclaw github deploy keys/d' "$SSH_CONFIG_FILE"
+
+        {
+            echo "# BEGIN openclaw github deploy keys"
+            echo "Host github.com"
+            echo "  User git"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
+            while IFS= read -r entry; do
+                SLUG=$(echo "$entry" | jq -r '.slug')
+                echo "  IdentityFile ~/.ssh/deploy_keys/${SLUG}/id_ed25519"
+            done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+            echo "# END openclaw github deploy keys"
+        } >> "$SSH_CONFIG_FILE"
+
+        chmod 600 "$SSH_CONFIG_FILE"
+        chown "$AGENT_USER:$AGENT_USER" "$SSH_CONFIG_FILE"
+        log_info "  SSH config written for GitHub deploy keys"
+    fi
+
+    if [ "$_DOCKER_ACCESS" = "true" ]; then
+        echo ""
+        log_info "Setting up Docker proxy (docker_access: true)..."
+
+        # Ensure Docker Compose plugin is present
+        if ! docker compose version &>/dev/null 2>&1; then
+            log_info "  Installing docker-compose-plugin..."
+            if command -v apt-get &>/dev/null; then
+                apt-get install -y docker-compose-plugin 2>/dev/null \
+                    && log_info "  docker-compose-plugin installed" \
+                    || log_warn "  Could not install docker-compose-plugin — install manually: apt install docker-compose-plugin"
+            else
+                log_warn "  apt-get not available — install docker compose plugin manually"
+            fi
+        else
+            log_info "  Docker Compose: $(docker compose version --short 2>/dev/null || echo 'present')"
+        fi
+
+        # Locate system Docker socket (dev-bot never touches this directly)
+        UPSTREAM_DOCKER_SOCK="/var/run/docker.sock"
+        if [ ! -S "$UPSTREAM_DOCKER_SOCK" ]; then
+            log_error "  Docker socket not found at $UPSTREAM_DOCKER_SOCK"
+            log_error "  Ensure Docker is installed and running on this host."
+            exit 1
+        fi
+
+        # Proxy socket dir: directory permissions (700, owned by dev-bot) restrict
+        # access to dev-bot + root only, regardless of the socket's own mode.
+        PROXY_DIR="/run/openclaw"
+        mkdir -p "$PROXY_DIR"
+        chown "$AGENT_USER:$AGENT_USER" "$PROXY_DIR"
+        chmod 700 "$PROXY_DIR"
+
+        PROXY_SOCKET_PATH="$PROXY_DIR/docker-proxy-${HOST_NAME}.sock"
+
+        # Install proxy binary
+        install -m 0755 "$SCRIPT_DIR/docker_proxy.py" /usr/local/bin/openclaw-docker-proxy
+
+        # Stop any existing proxy for this host
+        pkill -f "openclaw-docker-proxy.*docker-proxy-${HOST_NAME}" 2>/dev/null || true
+        sleep 0.5
+        rm -f "$PROXY_SOCKET_PATH"
+
+        # Build proxy invocation with safely quoted paths
+        PROXY_CMD="python3 /usr/local/bin/openclaw-docker-proxy"
+        PROXY_CMD="$PROXY_CMD $(printf '%q' "$PROXY_SOCKET_PATH")"
+        PROXY_CMD="$PROXY_CMD $(printf '%q' "$UPSTREAM_DOCKER_SOCK")"
+        while IFS= read -r _p; do
+            [ -z "$_p" ] && continue
+            PROXY_CMD="$PROXY_CMD $(printf '%q' "$_p")"
+        done <<< "$PROJECT_PATHS"
+
+        # Proxy runs as root — only root has access to the system Docker socket.
+        # The directory permissions above ensure dev-bot is the only non-root
+        # user that can connect to the proxy socket.
+        nohup bash -c "$PROXY_CMD" </dev/null >/dev/null 2>&1 &
+
+        # Wait up to 10 s for the proxy socket to appear
+        for _ in $(seq 1 20); do
+            [ -S "$PROXY_SOCKET_PATH" ] && break
+            sleep 0.5
+        done
+        if [ ! -S "$PROXY_SOCKET_PATH" ]; then
+            log_error "  Docker proxy failed to start."
+            log_error "  Check $PROXY_DIR/docker-proxy.log"
+            exit 1
+        fi
+
+        log_info "  Proxy socket : $PROXY_SOCKET_PATH"
+        log_info "  Allowed paths: $(echo "$PROJECT_PATHS" | tr '\n' ' ')"
+
+        # Persist DOCKER_HOST in dev-bot's shell init files so every SSH session
+        # picks it up without any extra configuration.
+        for _rc in "$AGENT_HOME/.bashrc" "$AGENT_HOME/.profile"; do
+            touch "$_rc"
+            sed -i '/# openclaw-docker-proxy/d' "$_rc"
+            printf 'export DOCKER_HOST=unix://%s # openclaw-docker-proxy\n' \
+                "$PROXY_SOCKET_PATH" >> "$_rc"
+        done
+        chown "$AGENT_USER:$AGENT_USER" \
+            "$AGENT_HOME/.bashrc" "$AGENT_HOME/.profile" 2>/dev/null || true
+        log_info "  DOCKER_HOST written to $AGENT_USER .bashrc and .profile"
+        log_warn "  Proxy is not persistent — re-run 'make setup HOST=$HOST_NAME' after host reboot"
+    fi
+
+    echo ""
+    log_info "=== restricted_key setup complete for '$HOST_NAME' ==="
     log_info "Install the SSH key next: make key-add HOST=$HOST_NAME"
     exit 0
-fi
-
-if [ "$ISOLATION" != "container" ]; then
-    log_error "Unknown isolation mode: '$ISOLATION'"
-    log_error "Valid values: container, restricted_key"
-    exit 1
-fi
-
-PROJECT_PATHS=$(jq -r --arg name "$HOST_NAME" \
-    '.ssh_hosts[] | select(.name == $name) | .project_paths[]' \
-    "$CONFIG_JSON")
-if [ -z "$PROJECT_PATHS" ]; then
-    log_error "No project_paths for host '$HOST_NAME' in config.json"
-    exit 1
 fi
 
 FORWARD_PORTS=$(jq -r --arg name "$HOST_NAME" \
@@ -110,7 +375,7 @@ DOCKER_ACCESS=$(jq -r --arg name "$HOST_NAME" \
 [ "$DOCKER_ACCESS" = "null" ] && DOCKER_ACCESS="false"
 
 EGRESS_FILTER=$(jq -r --arg name "$HOST_NAME" \
-    '.ssh_hosts[] | select(.name == $name) | .egress_filter // .chroot_egress_filter // false' \
+    '.ssh_hosts[] | select(.name == $name) | .egress_filter // false' \
     "$CONFIG_JSON")
 [ "$EGRESS_FILTER" = "null" ] && EGRESS_FILTER="false"
 
@@ -126,7 +391,18 @@ echo "$PROJECT_PATHS" | while IFS= read -r p; do [ -n "$p" ] && echo "    - $p";
 [ -n "$FORWARD_PORTS" ] && echo "  forward_ports: $FORWARD_PORTS" || echo "  forward_ports: (none)"
 echo "  docker_access: $DOCKER_ACCESS"
 echo "  egress_filter: $EGRESS_FILTER"
+if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
+    echo "  github_repos:"
+    echo "$GITHUB_REPOS" | jq -r '.[] | "    - \(.repo) (\(if .write then "read-write" else "read-only" end))"'
+fi
 echo ""
+
+# ── 0. Generate GitHub deploy keys (if any project_paths declare github_repo) ──
+if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
+    log_info "[0/8] Generating GitHub deploy keys..."
+    bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
+    echo ""
+fi
 
 # ── 1. Ensure AGENT_USER exists on host ────────────────────────────────────────
 log_info "[1/7] Ensuring $AGENT_USER exists..."
@@ -142,43 +418,7 @@ AGENT_HOME=$(eval echo "~$AGENT_USER")
 
 # ── 2. Validate project_paths and grant access via ACL ────────────────────────
 log_info "[2/7] Validating project_paths..."
-while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    if [ ! -d "$path" ]; then
-        log_error "  project_path does not exist: $path"
-        log_error "  Create it on the host before running this script."
-        exit 1
-    fi
-    if ! su -s /bin/bash "$AGENT_USER" -c "test -r '$path' && test -w '$path'" 2>/dev/null; then
-        log_info "  Granting $AGENT_USER rw access to $path via ACL..."
-        if command -v setfacl &>/dev/null; then
-            # Grant traverse (x) on each parent dir so rootless Docker can
-            # resolve the bind-mount source path without being blocked mid-tree.
-            _parent="$path"
-            while [ "$_parent" != "/" ]; do
-                _parent="$(dirname "$_parent")"
-                if ! su -s /bin/bash "$AGENT_USER" -c "test -x '$_parent'" 2>/dev/null; then
-                    setfacl -m "u:$AGENT_USER:x" "$_parent"
-                    log_info "    traverse: $_parent"
-                fi
-            done
-            # Grant rw on the project dir itself; default ACL covers new files.
-            setfacl -R  -m "u:$AGENT_USER:rwX" "$path"
-            setfacl -Rd -m "u:$AGENT_USER:rwX" "$path"
-            log_info "  ACL granted (new files will inherit access)"
-        else
-            log_warn "  setfacl not available — install acl package: apt install acl"
-            log_warn "  Falling back: adding $AGENT_USER to $(stat -c %G "$path") group..."
-            DIR_GROUP=$(stat -c %G "$path")
-            usermod -aG "$DIR_GROUP" "$AGENT_USER"
-            chmod -R g+rw "$path"
-            chmod g+x "$(dirname "$path")"
-            log_warn "  Group write set. SSH into $AGENT_USER may need a re-login to pick up group."
-        fi
-    else
-        log_info "  $path — OK"
-    fi
-done <<< "$PROJECT_PATHS"
+grant_project_acls
 
 # ── 3. Install rootless Docker for AGENT_USER ──────────────────────────────────
 log_info "[3/7] Installing/starting rootless Docker..."
@@ -301,12 +541,44 @@ if [ "$DOCKER_ACCESS" = "true" ]; then
     log_info "  docker_access: bind-mounting filtered proxy socket (not the real daemon socket)"
 fi
 
+# GitHub deploy keys: bind-mount host key store read-only into container.
+DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ] && [ -d "$DEPLOY_KEYS_BASE" ]; then
+    RUN_ARGS+=(-v "$DEPLOY_KEYS_BASE:/home/dev-bot/.ssh/deploy_keys:ro")
+    log_info "  deploy_keys: bind-mounting $DEPLOY_KEYS_BASE read-only"
+fi
+
 RUN_ARGS+=("$WORKSPACE_IMAGE" sleep infinity)
 
 # Pass the arguments through su -> docker. Quote each arg safely for the shell.
 _quoted_args=$(printf ' %q' "${RUN_ARGS[@]}")
 su - "$AGENT_USER" -c "DOCKER_HOST=unix://$DOCKER_SOCKET_PATH PATH=\$HOME/bin:\$PATH docker$_quoted_args" >/dev/null
 log_info "  Container '$CONTAINER_NAME' running"
+
+# Write SSH config for GitHub deploy keys inside the container.
+if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ] && [ -d "$DEPLOY_KEYS_BASE" ]; then
+    _docker_exec() { su - "$AGENT_USER" -c "DOCKER_HOST=unix://$DOCKER_SOCKET_PATH PATH=\$HOME/bin:\$PATH docker exec $*"; }
+    _docker_exec "$CONTAINER_NAME" mkdir -p /home/dev-bot/.ssh
+    _docker_exec "$CONTAINER_NAME" chmod 700 /home/dev-bot/.ssh
+
+    SSH_CONFIG_CONTENT="# BEGIN openclaw github deploy keys
+Host github.com
+  User git
+  IdentitiesOnly yes
+  StrictHostKeyChecking yes"
+    while IFS= read -r entry; do
+        SLUG=$(echo "$entry" | jq -r '.slug')
+        SSH_CONFIG_CONTENT="$SSH_CONFIG_CONTENT
+  IdentityFile /home/dev-bot/.ssh/deploy_keys/${SLUG}/id_ed25519"
+    done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+    SSH_CONFIG_CONTENT="$SSH_CONFIG_CONTENT
+# END openclaw github deploy keys"
+
+    echo "$SSH_CONFIG_CONTENT" | \
+        su - "$AGENT_USER" -c "DOCKER_HOST=unix://$DOCKER_SOCKET_PATH PATH=\$HOME/bin:\$PATH docker exec -i $CONTAINER_NAME tee /home/dev-bot/.ssh/config" >/dev/null
+    _docker_exec "$CONTAINER_NAME" chmod 600 /home/dev-bot/.ssh/config
+    log_info "  SSH config written inside container for GitHub deploy keys"
+fi
 
 # ── 6. Install session-entry ForceCommand script ───────────────────────────────
 log_info "[7/8] Installing openclaw-session-entry..."
@@ -339,8 +611,8 @@ Match User $AGENT_USER
 ${PERMIT_OPEN_CONFIG}
 # END Dev-Agent Workspace Configuration"
 
-# Replace existing block (workspace or legacy chroot) so re-runs pick up changes.
-for marker in "Dev-Agent Workspace Configuration" "Dev-Agent Chroot Configuration"; do
+# Replace existing block so re-runs pick up changes.
+for marker in "Dev-Agent Workspace Configuration"; do
     if grep -q "# BEGIN $marker" /etc/ssh/sshd_config 2>/dev/null; then
         sed -i "/# BEGIN $marker/,/# END $marker/d" /etc/ssh/sshd_config
     fi

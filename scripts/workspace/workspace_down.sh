@@ -66,6 +66,13 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         userdel -r "$AGENT_USER" 2>/dev/null || true
         log_info "Removed user $AGENT_USER"
     fi
+    if [ "$PURGE" = "--purge" ]; then
+        DEPLOY_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        if [ -d "$DEPLOY_KEYS_DIR" ]; then
+            rm -rf "$DEPLOY_KEYS_DIR"
+            log_info "Removed deploy keys: $DEPLOY_KEYS_DIR"
+        fi
+    fi
     log_info "Teardown complete"
     exit 0
 fi
@@ -101,7 +108,7 @@ fi
 # 2. Remove sshd Match block
 log_info "[2/3] Removing sshd Match block..."
 _removed_any=false
-for marker in "Dev-Agent Workspace Configuration" "Dev-Agent Chroot Configuration"; do
+for marker in "Dev-Agent Workspace Configuration"; do
     if grep -q "# BEGIN $marker" /etc/ssh/sshd_config 2>/dev/null; then
         sed -i "/# BEGIN $marker/,/# END $marker/d" /etc/ssh/sshd_config
         log_info "  Removed: $marker"
@@ -172,6 +179,12 @@ if [ "$PURGE" = "--purge" ]; then
 
         rm -rf "/run/user/$AGENT_UID" 2>/dev/null || true
         log_info "  Removed runtime dir"
+
+        DEPLOY_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        if [ -d "$DEPLOY_KEYS_DIR" ]; then
+            rm -rf "$DEPLOY_KEYS_DIR"
+            log_info "  Removed deploy keys: $DEPLOY_KEYS_DIR"
+        fi
     else
         log_info "  $AGENT_USER does not exist, nothing to purge"
     fi

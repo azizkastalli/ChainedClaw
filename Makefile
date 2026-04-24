@@ -5,21 +5,18 @@
 #   make uninstall        - Full uninstallation
 #   make help             - Show all available targets
 #
-# Local host targets (require HOST parameter):
-#   make workspace HOST=name       - Set up workspace container for a local host
-#   make workspace-clean HOST=name - Tear down workspace for a local host
+# Workspace targets (require HOST; add REMOTE_KEY for remote hosts):
+#   make workspace-setup HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user]
+#   make workspace-clean HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user]
+#   make workspace-purge HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user]
 #   make key-add HOST=name      - Install SSH key to host
 #   make key-remove HOST=name   - Remove SSH key from host
 #   make sync HOST=name         - Re-sync SSH key (alias for key-add)
 #   make test HOST=name         - Test SSH connection to host
-#
-# Remote host targets (require HOST, REMOTE_KEY; hostname/port from config.json):
-#   make remote-setup HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
-#   make remote-clean HOST=name REMOTE_KEY=/path/to/key [REMOTE_USER=user]
 
 .PHONY: help uninstall config keys auth build up down restart logs status \
-        preflight setup workspace workspace-clean key-add key-remove sync \
-        firewall firewall-flush remote-setup remote-clean test clean purge purge-data \
+        preflight workspace-setup workspace-clean workspace-purge \
+        deploy-keys key-add key-remove sync firewall firewall-flush test clean purge purge-data \
         security-check
 
 # Default target
@@ -45,28 +42,26 @@ help: ## Show this help message
 	@echo "Installation:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Host-specific targets (require HOST=name):"
-	@echo "  setup             Full host setup: workspace + key + sshd reload (recommended)"
-	@echo "  workspace         Set up workspace container for HOST (step 1 of setup)"
-	@echo "  workspace-clean   Tear down workspace container for HOST"
-	@echo "  key-add           Install SSH key to HOST (step 2 of setup)"
-	@echo "  key-remove        Remove SSH key from HOST"
+	@echo "Workspace targets (HOST required; add REMOTE_KEY to target a remote host):"
+	@echo "  workspace-setup   Full setup: workspace + SSH key + sshd reload"
+	@echo "  workspace-clean   Tear down workspace + remove SSH key"
+	@echo "  workspace-purge   Full teardown: also removes dev-bot user, Docker, ACLs"
+	@echo "  deploy-keys       Generate GitHub deploy keys for HOST (add to GitHub settings)"
+	@echo "  key-add           Install or refresh SSH key for HOST"
+	@echo "  key-remove        Remove SSH key for HOST"
 	@echo "  sync              Re-sync SSH key to HOST (alias for key-add)"
 	@echo "  test              Test SSH connection to HOST"
 	@echo ""
-	@echo "Remote host targets (hostname/port read from config.json):"
-	@echo "  remote-setup      Copy files and set up workspace on a remote host"
-	@echo "  remote-clean      Tear down workspace on a remote host and clean up"
-	@echo ""
 	@echo "Examples:"
-	@echo "  make keys                       # Generate SSH keys"
-	@echo "  make auth                       # Initialize dashboard credentials"
-	@echo "  make up                         # Start containers"
-	@echo "  make workspace HOST=my-host     # Set up workspace container for local host"
-	@echo "  make key-add HOST=my-host       # Install ForceCommand SSH key for local host"
-	@echo "  make remote-setup HOST=my-host REMOTE_KEY=~/.ssh/id_rsa"
-	@echo "  make test HOST=my-host          # Test SSH to my-host"
-	@echo "  make logs                       # Show container logs"
+	@echo "  make keys                                          # Generate SSH keys"
+	@echo "  make auth                                          # Initialize dashboard credentials"
+	@echo "  make up                                            # Start containers"
+	@echo "  make workspace-setup HOST=my-host                 # Local host setup"
+	@echo "  make workspace-setup HOST=my-host REMOTE_KEY=~/.ssh/id_rsa  # Remote setup"
+	@echo "  make workspace-clean HOST=my-host REMOTE_KEY=~/.ssh/id_rsa  # Remote teardown"
+	@echo "  make workspace-purge HOST=my-host REMOTE_KEY=~/.ssh/id_rsa  # Remote full purge"
+	@echo "  make test HOST=my-host                            # Test SSH to my-host"
+	@echo "  make logs                                         # Show container logs"
 
 # ------------------------------------------------------------------------------
 # Installation
@@ -234,46 +229,63 @@ preflight: ## Verify all security layers are active
 	@echo "To verify per-host access: make test HOST=<name>"
 
 # ------------------------------------------------------------------------------
-# Workspace Management (requires HOST parameter)
+# Workspace Management (HOST required; add REMOTE_KEY to target a remote host)
 # ------------------------------------------------------------------------------
 
-setup: ## Full host setup in one step: workspace + SSH key + sshd reload (usage: make setup HOST=name)
+workspace-setup: ## Full setup: workspace + SSH key + sshd reload (usage: make workspace-setup HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user])
 ifndef HOST
-	@echo "Error: HOST parameter required. Usage: make setup HOST=name"
+	@echo "Error: HOST required. Usage: make workspace-setup HOST=name [REMOTE_KEY=/path/to/key]"
 	@exit 1
 endif
-	@echo "=== Setting up host: $(HOST) ==="
+ifdef REMOTE_KEY
+	bash $(SCRIPTS_DIR)/remote/setup.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
+else
 	sudo bash $(SCRIPTS_DIR)/workspace/workspace_up.sh $(HOST)
 	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
-	sudo systemctl reload sshd
+	sudo systemctl reload sshd 2>/dev/null || true
 	@echo ""
 	@echo "Host $(HOST) is ready. Verify with: make test HOST=$(HOST)"
+endif
 
-workspace: ## Set up workspace container for HOST (usage: make workspace HOST=name)
+workspace-clean: ## Tear down workspace + remove SSH key (usage: make workspace-clean HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user])
 ifndef HOST
-	@echo "Error: HOST parameter required. Usage: make workspace HOST=name"
+	@echo "Error: HOST required. Usage: make workspace-clean HOST=name [REMOTE_KEY=/path/to/key]"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/workspace/workspace_up.sh $(HOST)
-	@echo "Reloading sshd..."
-	sudo systemctl reload sshd
-
-workspace-clean: ## Tear down workspace for HOST (usage: make workspace-clean HOST=name)
-ifndef HOST
-	@echo "Error: HOST parameter required. Usage: make workspace-clean HOST=name"
-	@exit 1
-endif
+ifdef REMOTE_KEY
+	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
+else
 	sudo bash $(SCRIPTS_DIR)/workspace/workspace_down.sh $(HOST)
 	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh $(HOST)
-	@echo "Reloading sshd..."
-	sudo systemctl reload sshd
+	sudo systemctl reload sshd 2>/dev/null || true
 	@echo ""
 	@echo "Your project files are untouched."
-	@echo "To rebuild: make workspace HOST=$(HOST) && make key-add HOST=$(HOST)"
+	@echo "To rebuild: make workspace-setup HOST=$(HOST)"
+endif
+
+workspace-purge: ## Full teardown: removes dev-bot user, Docker, ACLs (usage: make workspace-purge HOST=name [REMOTE_KEY=/path/to/key] [REMOTE_USER=user])
+ifndef HOST
+	@echo "Error: HOST required. Usage: make workspace-purge HOST=name [REMOTE_KEY=/path/to/key]"
+	@exit 1
+endif
+ifdef REMOTE_KEY
+	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER) --purge
+else
+	sudo bash $(SCRIPTS_DIR)/workspace/workspace_down.sh $(HOST) --purge
+	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh $(HOST)
+	sudo systemctl reload sshd 2>/dev/null || true
+endif
 
 # ------------------------------------------------------------------------------
 # Maintenance
 # ------------------------------------------------------------------------------
+
+deploy-keys: ## Generate GitHub deploy keys for HOST and print public keys to add on GitHub
+ifndef HOST
+	@echo "Error: HOST parameter required. Usage: make deploy-keys HOST=name"
+	@exit 1
+endif
+	sudo bash $(SCRIPTS_DIR)/ssh_key/deploy_key_add.sh $(HOST)
 
 key-add: ## Install SSH key to HOST (mode-aware: container or restricted_key)
 ifndef HOST
@@ -298,43 +310,6 @@ ifndef HOST
 endif
 	sudo bash $(SCRIPTS_DIR)/ssh_key/add.sh $(HOST)
 	sudo systemctl reload sshd 2>/dev/null || true
-
-# ------------------------------------------------------------------------------
-# Remote Host Management (requires HOST, REMOTE_IP, REMOTE_KEY parameters)
-# ------------------------------------------------------------------------------
-
-remote-setup: ## Set up workspace on a remote host (usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key)
-ifndef HOST
-	@echo "Error: HOST required. Usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-ifndef REMOTE_KEY
-	@echo "Error: REMOTE_KEY required. Usage: make remote-setup HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-	bash $(SCRIPTS_DIR)/remote/setup.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
-
-remote-clean: ## Tear down workspace on a remote host (usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key)
-ifndef HOST
-	@echo "Error: HOST required. Usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-ifndef REMOTE_KEY
-	@echo "Error: REMOTE_KEY required. Usage: make remote-clean HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER)
-
-remote-purge: ## Full teardown: also removes dev-bot user, rootless Docker, ACLs (usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key)
-ifndef HOST
-	@echo "Error: HOST required. Usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-ifndef REMOTE_KEY
-	@echo "Error: REMOTE_KEY required. Usage: make remote-purge HOST=name REMOTE_KEY=/path/to/key"
-	@exit 1
-endif
-	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER) --purge
 
 firewall: ## Set up firewall rules
 	sudo -E bash $(SCRIPTS_DIR)/firewall/setup_firewall.sh
