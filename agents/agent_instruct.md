@@ -21,7 +21,7 @@ filesystem. Depending on `project_access` mode:
 
 - `acl` — project paths are accessible at the paths shown in the comments (in-place access via ACLs)
 - `copy` — project files were copied into `~/workspace/<basename>` at setup time
-- `clone` — repos were cloned from GitHub into `~/workspace/<slug>` (e.g. `~/workspace/owner-repo`)
+- `clone` — repos were cloned from GitHub into `~/workspace/<repo-name>` (e.g. `~/workspace/GeoProj`)
 
 ## Git Repositories (GitHub deploy keys)
 
@@ -33,8 +33,8 @@ remote host — you can `git fetch` / `git pull` / (when `github_write: true`)
 Where things live on the remote host (as `dev-bot`):
 
 - **SSH client config:** `~/.ssh/config` — contains one `Host github.com-<slug>`
-  alias per repo (the slug is the `owner/repo` with `/` replaced by `-`, e.g.
-  `azizkastalli-GeoProj`)
+  alias per repo (the slug is just the repo name, e.g.
+  `GeoProj`)
 - **Deploy keys:** `~/.ssh/deploy_keys/<slug>/id_ed25519` (mounted read-only in
   container mode; copied into place in `restricted_key` mode)
 - **URL rewrites:** `~/.gitconfig` has `url."git@github.com-<slug>:owner/repo.git".insteadOf "git@github.com:owner/repo.git"`

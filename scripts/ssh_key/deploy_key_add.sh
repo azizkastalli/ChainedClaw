@@ -44,7 +44,7 @@ GITHUB_REPOS=$(jq -c --arg name "$HOST_NAME" \
     '[.ssh_hosts[] | select(.name == $name)
       | .project_paths[]
       | select(type == "object" and (.github_repo // "") != "")
-      | {path: .path, repo: .github_repo, slug: (.github_repo | gsub("/"; "-")), write: (.github_write // false)}
+      | {path: .path, repo: .github_repo, slug: (.github_repo | split("/")[-1]), write: (.github_write // false)}
      ]' \
     "$CONFIG_JSON" 2>/dev/null)
 
