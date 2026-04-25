@@ -11,6 +11,8 @@
 #   - touch project_paths (your files are untouched)
 #   - delete AGENT_USER (cheap to leave; reused on next workspace_up)
 #   - remove rootless Docker itself (may be used by other hosts)
+#   - delete deploy keys (preserved at /var/lib/openclaw/deploy_keys/ so
+#     GitHub deploy keys don't need to be re-added after teardown+setup)
 #
 # authorized_keys cleanup is handled by scripts/ssh_key/remove.sh.
 #
@@ -99,14 +101,8 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         log_info "$AGENT_USER does not exist, nothing to remove"
     fi
 
-    if [ "$PURGE" = "--purge" ]; then
-        DEPLOY_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
-        if [ -d "$DEPLOY_KEYS_DIR" ]; then
-            rm -rf "$DEPLOY_KEYS_DIR"
-            log_info "Removed deploy keys: $DEPLOY_KEYS_DIR"
-        fi
-    fi
     log_info "Teardown complete"
+    log_info "Deploy keys preserved at /var/lib/openclaw/deploy_keys/${HOST_NAME} — reused on next setup."
     exit 0
 fi
 
@@ -213,11 +209,6 @@ if [ "$PURGE" = "--purge" ]; then
         rm -rf "/run/user/$AGENT_UID" 2>/dev/null || true
         log_info "  Removed runtime dir"
 
-        DEPLOY_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
-        if [ -d "$DEPLOY_KEYS_DIR" ]; then
-            rm -rf "$DEPLOY_KEYS_DIR"
-            log_info "  Removed deploy keys: $DEPLOY_KEYS_DIR"
-        fi
     else
         log_info "  $AGENT_USER does not exist, nothing to purge"
     fi
