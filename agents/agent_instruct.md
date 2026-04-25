@@ -17,7 +17,11 @@ user `dev-bot`. Project directories are bind-mounted from the host:
 - Projects are mounted at `~/workspace/<project-name>` (e.g. `~/workspace/openhere-hermes`)
 
 For `restricted_key` hosts (e.g. RunPod), you connect directly to the host
-filesystem — project paths are accessible at the paths shown in the comments.
+filesystem. Depending on `project_access` mode:
+
+- `acl` — project paths are accessible at the paths shown in the comments (in-place access via ACLs)
+- `copy` — project files were copied into `~/workspace/<basename>` at setup time
+- `clone` — repos were cloned from GitHub into `~/workspace/<slug>` (e.g. `~/workspace/owner-repo`)
 
 ## Git Repositories (GitHub deploy keys)
 

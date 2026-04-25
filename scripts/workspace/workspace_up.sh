@@ -82,11 +82,17 @@ fi
 
 PROJECT_PATHS=$(jq -r --arg name "$HOST_NAME" \
     '.ssh_hosts[] | select(.name == $name) | .project_paths[]
-     | if type == "string" then . else .path end' \
-    "$CONFIG_JSON")
+     | if type == "string" then . else (.path // "") end' \
+    "$CONFIG_JSON" | grep -v '^$' || true)
 if [ -z "$PROJECT_PATHS" ]; then
-    log_error "No project_paths for host '$HOST_NAME' in config.json"
-    exit 1
+    # clone mode has no local paths — GITHUB_REPOS drives everything.
+    _pa=$(jq -r --arg name "$HOST_NAME" \
+        '.ssh_hosts[] | select(.name == $name) | .project_access // "acl"' \
+        "$CONFIG_JSON")
+    if [ "$_pa" != "clone" ]; then
+        log_error "No project_paths for host '$HOST_NAME' in config.json"
+        exit 1
+    fi
 fi
 
 # Extract project_paths entries that carry a github_repo (object form only).
@@ -160,8 +166,8 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         '.ssh_hosts[] | select(.name == $name) | .project_access // "acl"' \
         "$CONFIG_JSON")
     [ "$PROJECT_ACCESS" = "null" ] && PROJECT_ACCESS="acl"
-    if [ "$PROJECT_ACCESS" != "acl" ] && [ "$PROJECT_ACCESS" != "copy" ]; then
-        log_error "Unknown project_access: '$PROJECT_ACCESS' — valid values: acl, copy"
+    if [ "$PROJECT_ACCESS" != "acl" ] && [ "$PROJECT_ACCESS" != "copy" ] && [ "$PROJECT_ACCESS" != "clone" ]; then
+        log_error "Unknown project_access: '$PROJECT_ACCESS' — valid values: acl, copy, clone"
         exit 1
     fi
 
@@ -203,6 +209,89 @@ if [ "$ISOLATION" = "restricted_key" ]; then
             chown -R "$AGENT_USER:$AGENT_USER" "$_dest"
         done <<< "$PROJECT_PATHS"
         log_info "  dev-bot owns all workspace files — source paths are untouched"
+
+    elif [ "$PROJECT_ACCESS" = "clone" ]; then
+        # ── clone mode: repos are cloned fresh from GitHub into dev-bot's home ───
+        # dev-bot owns all files from the start; no dependency on host source paths.
+        # Requires github_repo to be set on each project_path entry.
+        # On re-run, existing clones are left untouched (not re-cloned).
+        log_info "Cloning project_paths from GitHub (project_access: clone)..."
+
+        # Deploy keys must be set up before cloning.
+        if [ "$GITHUB_REPOS" = "[]" ] || [ -z "$GITHUB_REPOS" ]; then
+            log_error "  project_access: clone requires github_repo on every project_path entry"
+            exit 1
+        fi
+        bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
+
+        DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        AGENT_SSH_DIR="$AGENT_HOME/.ssh"
+        DEPLOY_KEYS_DEST="$AGENT_SSH_DIR/deploy_keys"
+        mkdir -p "$DEPLOY_KEYS_DEST"
+        chmod 700 "$AGENT_SSH_DIR" "$DEPLOY_KEYS_DEST"
+
+        # Install deploy keys and SSH config so git can authenticate.
+        while IFS= read -r entry; do
+            SLUG=$(echo "$entry" | jq -r '.slug')
+            SRC_DIR="$DEPLOY_KEYS_BASE/$SLUG"
+            DEST_DIR="$DEPLOY_KEYS_DEST/$SLUG"
+            mkdir -p "$DEST_DIR"
+            cp "$SRC_DIR/id_ed25519"     "$DEST_DIR/id_ed25519"
+            cp "$SRC_DIR/id_ed25519.pub" "$DEST_DIR/id_ed25519.pub"
+            chmod 600 "$DEST_DIR/id_ed25519"
+            chmod 644 "$DEST_DIR/id_ed25519.pub"
+        done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+        chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_SSH_DIR"
+
+        # Write SSH config with per-repo Host aliases.
+        SSH_CONFIG_FILE="$AGENT_SSH_DIR/config"
+        touch "$SSH_CONFIG_FILE"
+        sed -i '/# BEGIN openclaw github deploy keys/,/# END openclaw github deploy keys/d' "$SSH_CONFIG_FILE"
+        {
+            echo "# BEGIN openclaw github deploy keys"
+            while IFS= read -r entry; do
+                SLUG=$(echo "$entry" | jq -r '.slug')
+                echo "Host github.com-${SLUG}"
+                echo "  HostName github.com"
+                echo "  User git"
+                echo "  IdentitiesOnly yes"
+                echo "  StrictHostKeyChecking yes"
+                echo "  IdentityFile ~/.ssh/deploy_keys/${SLUG}/id_ed25519"
+                echo ""
+            done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+            echo "# END openclaw github deploy keys"
+        } >> "$SSH_CONFIG_FILE"
+        chmod 600 "$SSH_CONFIG_FILE"
+        chown "$AGENT_USER:$AGENT_USER" "$SSH_CONFIG_FILE"
+
+        # Pre-populate github.com host keys.
+        KNOWN_HOSTS_FILE="$AGENT_SSH_DIR/known_hosts"
+        touch "$KNOWN_HOSTS_FILE"
+        if ! grep -q "^github.com " "$KNOWN_HOSTS_FILE" 2>/dev/null; then
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com 2>/dev/null >> "$KNOWN_HOSTS_FILE" || true
+        fi
+        chmod 644 "$KNOWN_HOSTS_FILE"
+        chown "$AGENT_USER:$AGENT_USER" "$KNOWN_HOSTS_FILE"
+
+        # Configure git insteadOf rewrites and clone each repo.
+        while IFS= read -r entry; do
+            SLUG=$(echo "$entry" | jq -r '.slug')
+            REPO=$(echo "$entry" | jq -r '.repo')
+            _dest="$WORKSPACE_DIR/$SLUG"
+
+            su - "$AGENT_USER" -c "git config --global url.\"git@github.com-${SLUG}:${REPO}.git\".insteadOf \"git@github.com:${REPO}.git\""
+
+            if [ -d "$_dest/.git" ]; then
+                log_info "  $SLUG already cloned at $_dest — skipping"
+            else
+                rm -rf "$_dest"
+                log_info "  Cloning $REPO -> $_dest ..."
+                su - "$AGENT_USER" -c "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes' git clone \"git@github.com:${REPO}.git\" \"$_dest\""
+                log_info "  Cloned: $_dest"
+            fi
+        done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+        log_info "  dev-bot owns all cloned files — source paths on this host are not used"
+
     else
         # ── acl mode: grant access to source paths + symlink into workspace ──────
         log_info "Validating project_paths and granting ACLs..."
@@ -224,7 +313,8 @@ if [ "$ISOLATION" = "restricted_key" ]; then
     chown "$AGENT_USER:$AGENT_USER" "$WORKSPACE_DIR"
 
     # ── Deploy keys: generate and install SSH config for github_repo paths ───────
-    if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
+    # clone mode sets up keys inline during the clone step above; skip here.
+    if [ "$PROJECT_ACCESS" != "clone" ] && [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
         echo ""
         log_info "Setting up GitHub deploy keys (restricted_key mode)..."
         bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
@@ -347,25 +437,32 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         rm -f "$PROXY_SOCKET_PATH"
 
         # Build proxy invocation with safely quoted paths.
-        # In `copy` mode, projects live at $AGENT_HOME/workspace/<basename> —
-        # that's where docker compose resolves relative bind sources, so the
-        # allowlist must reference those paths, not the original source paths
-        # (which dev-bot cannot see anyway in copy mode). In `acl` mode, the
-        # source paths themselves are what dev-bot operates on.
+        # - copy: projects live at $WORKSPACE_DIR/<basename>
+        # - clone: projects live at $WORKSPACE_DIR/<slug> (owner-repo)
+        # - acl:   source paths themselves are what dev-bot operates on
         PROXY_CMD="python3 /usr/local/bin/openclaw-docker-proxy"
         PROXY_CMD="$PROXY_CMD $(printf '%q' "$PROXY_SOCKET_PATH")"
         PROXY_CMD="$PROXY_CMD $(printf '%q' "$UPSTREAM_DOCKER_SOCK")"
         PROXY_ALLOWED_DISPLAY=""
-        while IFS= read -r _p; do
-            [ -z "$_p" ] && continue
-            if [ "$PROJECT_ACCESS" = "copy" ]; then
-                _effective="$WORKSPACE_DIR/$(basename "$_p")"
-            else
-                _effective="$_p"
-            fi
-            PROXY_CMD="$PROXY_CMD $(printf '%q' "$_effective")"
-            PROXY_ALLOWED_DISPLAY="$PROXY_ALLOWED_DISPLAY $_effective"
-        done <<< "$PROJECT_PATHS"
+        if [ "$PROJECT_ACCESS" = "clone" ]; then
+            while IFS= read -r entry; do
+                SLUG=$(echo "$entry" | jq -r '.slug')
+                _effective="$WORKSPACE_DIR/$SLUG"
+                PROXY_CMD="$PROXY_CMD $(printf '%q' "$_effective")"
+                PROXY_ALLOWED_DISPLAY="$PROXY_ALLOWED_DISPLAY $_effective"
+            done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+        else
+            while IFS= read -r _p; do
+                [ -z "$_p" ] && continue
+                if [ "$PROJECT_ACCESS" = "copy" ]; then
+                    _effective="$WORKSPACE_DIR/$(basename "$_p")"
+                else
+                    _effective="$_p"
+                fi
+                PROXY_CMD="$PROXY_CMD $(printf '%q' "$_effective")"
+                PROXY_ALLOWED_DISPLAY="$PROXY_ALLOWED_DISPLAY $_effective"
+            done <<< "$PROJECT_PATHS"
+        fi
 
         # Proxy runs as root — only root has access to the system Docker socket.
         # The directory permissions above ensure dev-bot is the only non-root

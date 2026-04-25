@@ -1,5 +1,8 @@
 {
+  "_comment": "Copy this file to config.json and fill in your values.",
+
   "allowed_domains": [
+    "_comment: Egress allowlist used when egress_filter: true. Add any domain your agent needs.",
     "api.anthropic.com",
     "sentry.io",
     "statsig.anthropic.com",
@@ -15,27 +18,60 @@
     "docker.com",
     "quay.io"
   ],
+
   "ssh_hosts": [
+
     {
+      "_comment": "=== CONTAINER ISOLATION (default) ===",
+      "_comment2": "Agent runs inside a long-lived Docker container on the remote host.",
+      "_comment3": "Best for: local servers / VMs you fully control.",
+
       "name": "my-server",
+      "_comment_name": "Identifier used in all make commands: make setup HOST=my-server",
+
       "hostname": "192.168.1.100",
+      "_comment_hostname": "IP or DNS name of the remote host.",
+
       "port": 22,
+      "_comment_port": "SSH port on the remote host.",
+
       "user": "dev-bot",
+      "_comment_user": "The agent SSH user. Must match AGENT_USER in .env.",
+
       "strict_host_key_checking": true,
+      "_comment_strict": "true = verify host fingerprint (recommended). false = accept any host key.",
+
       "isolation": "container",
+      "_comment_isolation": "container (default) | restricted_key. See below for details.",
+
       "egress_filter": true,
+      "_comment_egress": "true = block outbound traffic not in allowed_domains. Requires iptables on host.",
+
       "docker_access": false,
+      "_comment_docker": "true = bind-mount a filtered Docker socket so the agent can run containers.",
+
       "project_paths": [
+        "_comment: List of directories the agent can access. String form or object form.",
         "/path/to/your/project",
         {
           "path": "/path/to/your/github-project",
+          "_comment_path": "Absolute path on THIS (operator) machine.",
+
           "github_repo": "your-org/your-repo",
-          "github_write": false
+          "_comment_github_repo": "owner/repo on GitHub. Triggers deploy key generation.",
+
+          "github_write": false,
+          "_comment_github_write": "false = read-only deploy key. true = read-write deploy key."
         }
       ],
-      "forward_ports": []
+
+      "forward_ports": [],
+      "_comment_ports": "Ports to publish from the container to 127.0.0.1 on the host (e.g. [3000, 8080])."
     },
+
     {
+      "_comment": "=== CONTAINER ISOLATION with docker_access and forward_ports ===",
+
       "name": "my-dev-server",
       "hostname": "192.168.1.101",
       "port": 22,
@@ -53,20 +89,88 @@
       ],
       "forward_ports": [3000, 8080]
     },
+
     {
-      "name": "my-runpod",
+      "_comment": "=== RESTRICTED_KEY ISOLATION — project_access: acl ===",
+      "_comment2": "Agent runs directly on the host as dev-bot (no container).",
+      "_comment3": "Best for: RunPod / cloud VMs where you can't install rootless Docker.",
+      "_comment4": "project_access: acl — agent accesses source paths in-place via filesystem ACLs.",
+      "_comment5": "  Changes are live on the source directory. Good when the source is already on the remote host.",
+
+      "name": "my-runpod-acl",
       "hostname": "104.21.0.1",
       "port": 22022,
       "user": "dev-bot",
       "strict_host_key_checking": true,
       "isolation": "restricted_key",
+
+      "project_access": "acl",
+      "_comment_project_access": "acl | copy | clone. Controls how project files reach dev-bot.",
+
+      "docker_access": false,
+      "egress_filter": false,
+
       "project_paths": [
         {
           "path": "/workspace/my_project",
+          "_comment_path": "Must exist on the REMOTE host (not the operator machine).",
           "github_repo": "your-org/my-project",
           "github_write": false
         }
       ]
+    },
+
+    {
+      "_comment": "=== RESTRICTED_KEY ISOLATION — project_access: copy ===",
+      "_comment2": "project_access: copy — project files are rsync-copied from the operator machine",
+      "_comment3": "  into dev-bot's ~/workspace/<basename>. dev-bot owns all files.",
+      "_comment4": "  Changes are isolated to dev-bot's copy; source on operator machine is untouched.",
+      "_comment5": "  On re-setup, files are re-synced from source (operator machine -> remote).",
+
+      "name": "my-runpod-copy",
+      "hostname": "104.21.0.2",
+      "port": 22022,
+      "user": "dev-bot",
+      "strict_host_key_checking": true,
+      "isolation": "restricted_key",
+      "project_access": "copy",
+      "docker_access": true,
+      "egress_filter": false,
+      "project_paths": [
+        {
+          "path": "/home/you/projects/my_project",
+          "_comment_path": "Absolute path on THIS (operator) machine — copied to remote on setup.",
+          "github_repo": "your-org/my-project",
+          "github_write": true
+        }
+      ]
+    },
+
+    {
+      "_comment": "=== RESTRICTED_KEY ISOLATION — project_access: clone ===",
+      "_comment2": "project_access: clone — repos are cloned fresh from GitHub into dev-bot's ~/workspace/<slug>.",
+      "_comment3": "  dev-bot owns all files from the start; no dependency on local source paths.",
+      "_comment4": "  Existing clones are left untouched on re-setup (not re-cloned).",
+      "_comment5": "  Best for: remote hosts with no local copy; avoids root-owned file issues from Docker containers.",
+      "_comment6": "  Requires github_repo on every project_path entry.",
+
+      "name": "my-runpod-clone",
+      "hostname": "104.21.0.3",
+      "port": 22022,
+      "user": "dev-bot",
+      "strict_host_key_checking": true,
+      "isolation": "restricted_key",
+      "project_access": "clone",
+      "docker_access": true,
+      "egress_filter": false,
+      "project_paths": [
+        {
+          "_comment_path": "path is optional in clone mode — omit it or leave it out entirely.",
+          "github_repo": "your-org/my-project",
+          "github_write": true
+        }
+      ]
     }
+
   ]
 }
