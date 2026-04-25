@@ -171,6 +171,21 @@ _GITHUB_REPO_COUNT=$(jq --arg name "$HOST_NAME" \
 log_info "  Deploy key check: isolation=$ISOLATION, github_repo_count=$_GITHUB_REPO_COUNT"
 
 if [ "$ISOLATION" = "restricted_key" ] && [ "$_GITHUB_REPO_COUNT" -gt 0 ]; then
+    # Check which keys are new (don't exist yet) before generating.
+    _NEW_KEYS=false
+    while IFS= read -r _slug; do
+        [ -z "$_slug" ] && continue
+        if [ ! -f "$PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME}/${_slug}/id_ed25519" ]; then
+            _NEW_KEYS=true
+            break
+        fi
+    done < <(jq -r --arg name "$HOST_NAME" \
+        '[.ssh_hosts[] | select(.name == $name)
+          | .project_paths[]
+          | select(type == "object" and (.github_repo // "") != "")
+          | .github_repo | split("/")[-1]] | .[]' \
+        "$PROJECT_ROOT/config.json")
+
     log_info "  Generating/reusing deploy keys locally..."
     bash "$PROJECT_ROOT/scripts/ssh_key/deploy_key_add.sh" "$HOST_NAME"
 
@@ -178,6 +193,20 @@ if [ "$ISOLATION" = "restricted_key" ] && [ "$_GITHUB_REPO_COUNT" -gt 0 ]; then
     if [ ! -d "$LOCAL_KEYS_DIR" ]; then
         log_error "  Local keys dir not found after deploy_key_add.sh: $LOCAL_KEYS_DIR"
         exit 1
+    fi
+
+    # Pause for confirmation only when new keys were just generated.
+    if [ "$_NEW_KEYS" = true ]; then
+        echo ""
+        echo "  ┌─────────────────────────────────────────────────────────┐"
+        echo "  │  ACTION REQUIRED: Add the public keys above to GitHub.  │"
+        echo "  │  Visit each repo → Settings → Deploy keys → Add key.    │"
+        echo "  └─────────────────────────────────────────────────────────┘"
+        echo ""
+        read -r -p "  Press Enter once all keys are added to GitHub, or Ctrl+C to abort... "
+        echo ""
+    else
+        log_info "  All keys already exist — skipping GitHub confirmation prompt"
     fi
 
     log_info "  Uploading deploy keys to remote..."
