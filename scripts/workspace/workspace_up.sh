@@ -273,6 +273,9 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         chmod 644 "$KNOWN_HOSTS_FILE"
         chown "$AGENT_USER:$AGENT_USER" "$KNOWN_HOSTS_FILE"
 
+        # Ensure dev-bot owns the workspace dir before cloning into it.
+        chown "$AGENT_USER:$AGENT_USER" "$WORKSPACE_DIR"
+
         # Configure git insteadOf rewrites and clone each repo.
         while IFS= read -r entry; do
             SLUG=$(echo "$entry" | jq -r '.slug')
@@ -286,8 +289,12 @@ if [ "$ISOLATION" = "restricted_key" ]; then
             else
                 rm -rf "$_dest"
                 log_info "  Cloning $REPO -> $_dest ..."
-                su - "$AGENT_USER" -c "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes' git clone \"git@github.com:${REPO}.git\" \"$_dest\""
-                log_info "  Cloned: $_dest"
+                if su - "$AGENT_USER" -c "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes' git clone \"git@github.com:${REPO}.git\" \"$_dest\""; then
+                    log_info "  Cloned: $_dest"
+                else
+                    log_error "  Failed to clone $REPO — check deploy key is added to GitHub and has access"
+                    exit 1
+                fi
             fi
         done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
         log_info "  dev-bot owns all cloned files — source paths on this host are not used"
