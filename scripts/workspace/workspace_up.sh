@@ -222,9 +222,20 @@ if [ "$ISOLATION" = "restricted_key" ]; then
             log_error "  project_access: clone requires github_repo on every project_path entry"
             exit 1
         fi
-        bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
 
-        DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        # Keys are uploaded by setup.sh from the operator machine (source of truth).
+        # Fall back to generating locally only if running workspace_up.sh directly
+        # (not via the remote setup flow).
+        UPLOADED_KEYS_DIR="$SCRIPT_DIR/../../deploy_keys"
+        if [ -d "$UPLOADED_KEYS_DIR" ]; then
+            log_info "  Using pre-uploaded deploy keys from $UPLOADED_KEYS_DIR"
+            DEPLOY_KEYS_BASE="$UPLOADED_KEYS_DIR"
+        else
+            log_info "  No pre-uploaded keys found — generating locally..."
+            bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
+            DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        fi
+
         AGENT_SSH_DIR="$AGENT_HOME/.ssh"
         DEPLOY_KEYS_DEST="$AGENT_SSH_DIR/deploy_keys"
         mkdir -p "$DEPLOY_KEYS_DEST"
@@ -235,6 +246,11 @@ if [ "$ISOLATION" = "restricted_key" ]; then
             SLUG=$(echo "$entry" | jq -r '.slug')
             SRC_DIR="$DEPLOY_KEYS_BASE/$SLUG"
             DEST_DIR="$DEPLOY_KEYS_DEST/$SLUG"
+            if [ ! -f "$SRC_DIR/id_ed25519" ]; then
+                log_error "  Deploy key not found: $SRC_DIR/id_ed25519"
+                log_error "  Run 'make setup HOST=$HOST_NAME' from the operator machine to upload keys."
+                exit 1
+            fi
             mkdir -p "$DEST_DIR"
             cp "$SRC_DIR/id_ed25519"     "$DEST_DIR/id_ed25519"
             cp "$SRC_DIR/id_ed25519.pub" "$DEST_DIR/id_ed25519.pub"
@@ -319,14 +335,24 @@ if [ "$ISOLATION" = "restricted_key" ]; then
 
     chown "$AGENT_USER:$AGENT_USER" "$WORKSPACE_DIR"
 
-    # ── Deploy keys: generate and install SSH config for github_repo paths ───────
+    # ── Deploy keys: install SSH config for github_repo paths ────────────────────
     # clone mode sets up keys inline during the clone step above; skip here.
     if [ "$PROJECT_ACCESS" != "clone" ] && [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ]; then
         echo ""
         log_info "Setting up GitHub deploy keys (restricted_key mode)..."
-        bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
 
-        DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        # Keys are uploaded by setup.sh from the operator machine (source of truth).
+        # Fall back to generating locally only if running workspace_up.sh directly.
+        UPLOADED_KEYS_DIR="$SCRIPT_DIR/../../deploy_keys"
+        if [ -d "$UPLOADED_KEYS_DIR" ]; then
+            log_info "  Using pre-uploaded deploy keys from $UPLOADED_KEYS_DIR"
+            DEPLOY_KEYS_BASE="$UPLOADED_KEYS_DIR"
+        else
+            log_info "  No pre-uploaded keys found — generating locally..."
+            bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
+            DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+        fi
+
         AGENT_SSH_DIR="$AGENT_HOME/.ssh"
         DEPLOY_KEYS_DEST="$AGENT_SSH_DIR/deploy_keys"
 
@@ -338,6 +364,11 @@ if [ "$ISOLATION" = "restricted_key" ]; then
             SLUG=$(echo "$entry" | jq -r '.slug')
             SRC_DIR="$DEPLOY_KEYS_BASE/$SLUG"
             DEST_DIR="$DEPLOY_KEYS_DEST/$SLUG"
+            if [ ! -f "$SRC_DIR/id_ed25519" ]; then
+                log_error "  Deploy key not found: $SRC_DIR/id_ed25519"
+                log_error "  Run 'make setup HOST=$HOST_NAME' from the operator machine to upload keys."
+                exit 1
+            fi
             mkdir -p "$DEST_DIR"
             cp "$SRC_DIR/id_ed25519"     "$DEST_DIR/id_ed25519"
             cp "$SRC_DIR/id_ed25519.pub" "$DEST_DIR/id_ed25519.pub"

@@ -159,6 +159,29 @@ scp -r "${SCP_OPTS[@]}" \
     "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"
 log_info "  Copied scripts, agents/workspace, scoped .env, config.json, id_agent.pub"
 
+# For restricted_key hosts: generate deploy keys LOCALLY (operator machine is the
+# source of truth) then upload them to the remote. This ensures keys survive purge+setup
+# cycles without ever needing to re-register them on GitHub.
+_GITHUB_REPOS=$(jq -c --arg name "$HOST_NAME" \
+    '[.ssh_hosts[] | select(.name == $name)
+      | .project_paths[]
+      | select(type == "object" and (.github_repo // "") != "")]' \
+    "$PROJECT_ROOT/config.json" 2>/dev/null || echo "[]")
+
+if [ "$ISOLATION" = "restricted_key" ] && [ "$_GITHUB_REPOS" != "[]" ] && [ -n "$_GITHUB_REPOS" ]; then
+    log_info "  Generating/reusing deploy keys locally..."
+    sudo bash "$PROJECT_ROOT/scripts/ssh_key/deploy_key_add.sh" "$HOST_NAME"
+
+    LOCAL_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+    if [ -d "$LOCAL_KEYS_DIR" ]; then
+        ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR/deploy_keys"
+        scp -r "${SCP_OPTS[@]}" \
+            "$LOCAL_KEYS_DIR/." \
+            "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/deploy_keys/"
+        log_info "  Uploaded deploy keys to $REMOTE_DIR/deploy_keys/"
+    fi
+fi
+
 # Check that the remote user can sudo (gives a clear error before attempting privileged steps)
 log_info "[3/4] Running setup and installing SSH key on remote..."
 if ! ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" 'sudo -n true 2>/dev/null'; then
