@@ -11,7 +11,7 @@
 #   - touch project_paths (your files are untouched)
 #   - delete AGENT_USER (cheap to leave; reused on next workspace_up)
 #   - remove rootless Docker itself (may be used by other hosts)
-#   - delete deploy keys (preserved at /var/lib/openclaw/deploy_keys/ so
+#   - delete deploy keys (preserved at <project-root>/.ssh/deploy_keys/ so
 #     GitHub deploy keys don't need to be re-added after teardown+setup)
 #
 # authorized_keys cleanup is handled by scripts/ssh_key/remove.sh.
@@ -118,7 +118,7 @@ if [ "$ISOLATION" = "restricted_key" ]; then
     fi
 
     log_info "Teardown complete"
-    log_info "Deploy keys preserved at /var/lib/openclaw/deploy_keys/${HOST_NAME} — reused on next setup."
+    log_info "Deploy keys preserved at $PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME} — reused on next setup."
     exit 0
 fi
 

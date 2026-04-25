@@ -2,10 +2,12 @@
 #
 # Generate GitHub deploy keys for project_paths that declare a github_repo.
 #
-# Keys are stored at /var/lib/openclaw/deploy_keys/<host>/<owner-repo>/
-# and are bind-mounted read-only into the workspace container by workspace_up.sh.
+# Keys are stored at <project-root>/.ssh/deploy_keys/<host>/<owner-repo>/
+# (operator machine is the source of truth). They are uploaded to the remote
+# during setup, and bind-mounted read-only into the workspace container.
 #
 # Running this script is idempotent — existing keys are not regenerated.
+# Runs as the regular user (no sudo); .ssh/ is gitignored.
 #
 # Usage: deploy_key_add.sh <host-name>
 #
@@ -21,11 +23,6 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_key()   { echo -e "${CYAN}[KEY]${NC} $1"; }
-
-if [ "$EUID" -ne 0 ]; then
-    log_error "Must run as root (sudo)"
-    exit 1
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -57,7 +54,7 @@ if [ -z "$GITHUB_REPOS" ] || [ "$GITHUB_REPOS" = "[]" ]; then
     exit 0
 fi
 
-KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+KEYS_BASE="$PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME}"
 mkdir -p "$KEYS_BASE"
 chmod 700 "$KEYS_BASE"
 

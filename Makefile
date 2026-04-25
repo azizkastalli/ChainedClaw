@@ -285,7 +285,7 @@ ifndef HOST
 	@echo "Error: HOST parameter required. Usage: make deploy-keys HOST=name"
 	@exit 1
 endif
-	sudo bash $(SCRIPTS_DIR)/ssh_key/deploy_key_add.sh $(HOST)
+	bash $(SCRIPTS_DIR)/ssh_key/deploy_key_add.sh $(HOST)
 
 key-add: ## Install SSH key to HOST (mode-aware: container or restricted_key)
 ifndef HOST

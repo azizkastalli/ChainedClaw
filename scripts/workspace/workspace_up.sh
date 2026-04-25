@@ -233,7 +233,7 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         else
             log_info "  No pre-uploaded keys found — generating locally..."
             bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
-            DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+            DEPLOY_KEYS_BASE="$PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME}"
         fi
 
         AGENT_SSH_DIR="$AGENT_HOME/.ssh"
@@ -350,7 +350,7 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         else
             log_info "  No pre-uploaded keys found — generating locally..."
             bash "$SCRIPT_DIR/../ssh_key/deploy_key_add.sh" "$HOST_NAME"
-            DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+            DEPLOY_KEYS_BASE="$PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME}"
         fi
 
         AGENT_SSH_DIR="$AGENT_HOME/.ssh"
@@ -725,7 +725,7 @@ if [ "$DOCKER_ACCESS" = "true" ]; then
 fi
 
 # GitHub deploy keys: bind-mount host key store read-only into container.
-DEPLOY_KEYS_BASE="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
+DEPLOY_KEYS_BASE="$PROJECT_ROOT/.ssh/deploy_keys/${HOST_NAME}"
 if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ] && [ -d "$DEPLOY_KEYS_BASE" ]; then
     RUN_ARGS+=(-v "$DEPLOY_KEYS_BASE:/home/dev-bot/.ssh/deploy_keys:ro")
     log_info "  deploy_keys: bind-mounting $DEPLOY_KEYS_BASE read-only"
