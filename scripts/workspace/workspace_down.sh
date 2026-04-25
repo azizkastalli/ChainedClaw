@@ -68,6 +68,22 @@ if [ "$ISOLATION" = "restricted_key" ]; then
     pkill -f "openclaw-docker-proxy.*docker-proxy-${HOST_NAME}" 2>/dev/null || true
     rm -f "/run/openclaw/docker-proxy-${HOST_NAME}.sock" 2>/dev/null || true
 
+    # Stop and remove all Docker containers on the system daemon — containers
+    # launched by dev-bot through the proxy run as root's Docker, so they
+    # survive pkill -u dev-bot. Stop them explicitly before killing the user.
+    if command -v docker &>/dev/null && [ -S /var/run/docker.sock ]; then
+        _running=$(docker ps -q 2>/dev/null)
+        if [ -n "$_running" ]; then
+            log_info "Stopping running Docker containers..."
+            docker stop $_running 2>/dev/null || true
+        fi
+        _all=$(docker ps -aq 2>/dev/null)
+        if [ -n "$_all" ]; then
+            docker rm -f $_all 2>/dev/null || true
+            log_info "  All Docker containers removed"
+        fi
+    fi
+
     if id "$AGENT_USER" &>/dev/null; then
         AGENT_UID=$(id -u "$AGENT_USER")
 
