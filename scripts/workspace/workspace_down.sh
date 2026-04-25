@@ -61,11 +61,44 @@ fi
 
 if [ "$ISOLATION" = "restricted_key" ]; then
     echo "=== Teardown: restricted_key mode for '$HOST_NAME' ==="
+
+    # Stop the openclaw-docker-proxy (runs as root in restricted_key mode).
+    pkill -f "openclaw-docker-proxy.*docker-proxy-${HOST_NAME}" 2>/dev/null || true
+    rm -f "/run/openclaw/docker-proxy-${HOST_NAME}.sock" 2>/dev/null || true
+
     if id "$AGENT_USER" &>/dev/null; then
+        AGENT_UID=$(id -u "$AGENT_USER")
+
+        # Graceful stop of any rootless dockerd dev-bot may have started.
+        su - "$AGENT_USER" -c "dockerd-rootless-stop.sh" 2>/dev/null || true
+        sleep 1
+
+        # SIGTERM everything, wait, then SIGKILL stragglers. userdel -r fails
+        # if any process still owns the UID, so we must actually be thorough.
         pkill -u "$AGENT_USER" 2>/dev/null || true
-        userdel -r "$AGENT_USER" 2>/dev/null || true
-        log_info "Removed user $AGENT_USER"
+        sleep 1
+        pkill -9 -u "$AGENT_USER" 2>/dev/null || true
+        sleep 1
+
+        loginctl disable-linger "$AGENT_USER" 2>/dev/null || true
+
+        if userdel -r "$AGENT_USER"; then
+            log_info "Removed user $AGENT_USER and home directory"
+        else
+            log_error "userdel failed — processes may still be running as $AGENT_USER"
+            log_error "Running processes:"
+            ps -u "$AGENT_USER" -o pid,comm 2>/dev/null || true
+            log_error "Kill them manually then re-run: sudo userdel -r $AGENT_USER"
+            exit 1
+        fi
+
+        sed -i "/^${AGENT_USER}:/d" /etc/subuid 2>/dev/null || true
+        sed -i "/^${AGENT_USER}:/d" /etc/subgid 2>/dev/null || true
+        rm -rf "/run/user/$AGENT_UID" 2>/dev/null || true
+    else
+        log_info "$AGENT_USER does not exist, nothing to remove"
     fi
+
     if [ "$PURGE" = "--purge" ]; then
         DEPLOY_KEYS_DIR="/var/lib/openclaw/deploy_keys/${HOST_NAME}"
         if [ -d "$DEPLOY_KEYS_DIR" ]; then

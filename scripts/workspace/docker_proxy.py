@@ -140,13 +140,19 @@ def check_create(body_bytes, allowed_paths):
     if bad:
         return False, f'Dangerous capabilities not allowed: {", ".join(sorted(bad))}'
 
-    # Binds: ["host_path:container_path[:options]", ...]
+    # Binds entries come in two forms:
+    #   - "host-path:container-path[:options]"  -> bind mount (source starts with '/')
+    #   - "volume-name:container-path[:options]" -> named volume (managed by Docker,
+    #                                                safe: lives under /var/lib/docker/volumes)
+    # Only bind mounts need to be validated against the allowlist.
     for bind in (hc.get('Binds') or []):
-        host_path = bind.split(':')[0]
-        if not is_path_allowed(host_path, allowed_paths):
-            return False, f'Bind mount outside allowed paths: {host_path}'
+        source = bind.split(':', 1)[0]
+        if source.startswith('/'):
+            if not is_path_allowed(source, allowed_paths):
+                return False, f'Bind mount outside allowed paths: {source}'
 
-    # Mounts: [{"Type": "bind", "Source": "...", ...}, ...]
+    # Mounts: [{"Type": "bind"|"volume"|"tmpfs", "Source": "...", ...}, ...]
+    # Only "bind" entries touch the host filesystem; "volume" is Docker-managed.
     for mount in (hc.get('Mounts') or []):
         if (mount.get('Type') or '') == 'bind':
             src = mount.get('Source') or mount.get('source', '')

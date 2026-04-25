@@ -256,15 +256,20 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         # Remove any existing openclaw-managed github.com block.
         sed -i '/# BEGIN openclaw github deploy keys/,/# END openclaw github deploy keys/d' "$SSH_CONFIG_FILE"
 
+        # Per-repo Host aliases: GitHub deploy keys are repo-scoped, so a shared
+        # `Host github.com` block with multiple IdentityFiles causes GitHub to
+        # reject operations when SSH offers the wrong repo's key first.
         {
             echo "# BEGIN openclaw github deploy keys"
-            echo "Host github.com"
-            echo "  User git"
-            echo "  IdentitiesOnly yes"
-            echo "  StrictHostKeyChecking yes"
             while IFS= read -r entry; do
                 SLUG=$(echo "$entry" | jq -r '.slug')
+                echo "Host github.com-${SLUG}"
+                echo "  HostName github.com"
+                echo "  User git"
+                echo "  IdentitiesOnly yes"
+                echo "  StrictHostKeyChecking yes"
                 echo "  IdentityFile ~/.ssh/deploy_keys/${SLUG}/id_ed25519"
+                echo ""
             done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
             echo "# END openclaw github deploy keys"
         } >> "$SSH_CONFIG_FILE"
@@ -272,6 +277,30 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         chmod 600 "$SSH_CONFIG_FILE"
         chown "$AGENT_USER:$AGENT_USER" "$SSH_CONFIG_FILE"
         log_info "  SSH config written for GitHub deploy keys"
+
+        # Pre-populate github.com host keys in known_hosts so StrictHostKeyChecking
+        # doesn't block the agent's first git operation.
+        KNOWN_HOSTS_FILE="$AGENT_SSH_DIR/known_hosts"
+        touch "$KNOWN_HOSTS_FILE"
+        if ! grep -q "^github.com " "$KNOWN_HOSTS_FILE" 2>/dev/null; then
+            if ssh-keyscan -t rsa,ecdsa,ed25519 github.com 2>/dev/null >> "$KNOWN_HOSTS_FILE"; then
+                log_info "  github.com host keys added to known_hosts"
+            else
+                log_warn "  ssh-keyscan github.com failed — agent may need to populate known_hosts manually"
+            fi
+        fi
+        chmod 644 "$KNOWN_HOSTS_FILE"
+        chown "$AGENT_USER:$AGENT_USER" "$KNOWN_HOSTS_FILE"
+
+        # Configure git url.insteadOf rewrites so `git@github.com:owner/repo.git`
+        # remotes are auto-rewritten to the per-repo Host alias.
+        su - "$AGENT_USER" -c "git config --global --get-regexp '^url\\.git@github\\.com-.*\\.insteadof$' 2>/dev/null | awk '{print \$1}' | sed 's/\\.insteadof\$//' | sort -u | while read section; do git config --global --remove-section \"\$section\" 2>/dev/null || true; done" || true
+        while IFS= read -r entry; do
+            SLUG=$(echo "$entry" | jq -r '.slug')
+            REPO=$(echo "$entry" | jq -r '.repo')
+            su - "$AGENT_USER" -c "git config --global url.\"git@github.com-${SLUG}:${REPO}.git\".insteadOf \"git@github.com:${REPO}.git\""
+        done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+        log_info "  git insteadOf rewrites configured for ${AGENT_USER}"
     fi
 
     if [ "$_DOCKER_ACCESS" = "true" ]; then
@@ -317,13 +346,25 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         sleep 0.5
         rm -f "$PROXY_SOCKET_PATH"
 
-        # Build proxy invocation with safely quoted paths
+        # Build proxy invocation with safely quoted paths.
+        # In `copy` mode, projects live at $AGENT_HOME/workspace/<basename> —
+        # that's where docker compose resolves relative bind sources, so the
+        # allowlist must reference those paths, not the original source paths
+        # (which dev-bot cannot see anyway in copy mode). In `acl` mode, the
+        # source paths themselves are what dev-bot operates on.
         PROXY_CMD="python3 /usr/local/bin/openclaw-docker-proxy"
         PROXY_CMD="$PROXY_CMD $(printf '%q' "$PROXY_SOCKET_PATH")"
         PROXY_CMD="$PROXY_CMD $(printf '%q' "$UPSTREAM_DOCKER_SOCK")"
+        PROXY_ALLOWED_DISPLAY=""
         while IFS= read -r _p; do
             [ -z "$_p" ] && continue
-            PROXY_CMD="$PROXY_CMD $(printf '%q' "$_p")"
+            if [ "$PROJECT_ACCESS" = "copy" ]; then
+                _effective="$WORKSPACE_DIR/$(basename "$_p")"
+            else
+                _effective="$_p"
+            fi
+            PROXY_CMD="$PROXY_CMD $(printf '%q' "$_effective")"
+            PROXY_ALLOWED_DISPLAY="$PROXY_ALLOWED_DISPLAY $_effective"
         done <<< "$PROJECT_PATHS"
 
         # Proxy runs as root — only root has access to the system Docker socket.
@@ -343,19 +384,26 @@ if [ "$ISOLATION" = "restricted_key" ]; then
         fi
 
         log_info "  Proxy socket : $PROXY_SOCKET_PATH"
-        log_info "  Allowed paths: $(echo "$PROJECT_PATHS" | tr '\n' ' ')"
+        log_info "  Allowed paths:${PROXY_ALLOWED_DISPLAY}"
 
         # Persist DOCKER_HOST in dev-bot's shell init files so every SSH session
-        # picks it up without any extra configuration.
+        # picks it up without any extra configuration. Ubuntu's default .bashrc
+        # has an early `return` for non-interactive shells, so `ssh host cmd`
+        # sessions (which the agent uses) never reach an appended export. We
+        # prepend to .bashrc to run before that guard, and also write .profile
+        # for login shells.
+        DOCKER_HOST_LINE="export DOCKER_HOST=unix://${PROXY_SOCKET_PATH} # openclaw-docker-proxy"
         for _rc in "$AGENT_HOME/.bashrc" "$AGENT_HOME/.profile"; do
             touch "$_rc"
             sed -i '/# openclaw-docker-proxy/d' "$_rc"
-            printf 'export DOCKER_HOST=unix://%s # openclaw-docker-proxy\n' \
-                "$PROXY_SOCKET_PATH" >> "$_rc"
         done
+        # Prepend to .bashrc (runs before the interactive-shell guard).
+        printf '%s\n%s' "$DOCKER_HOST_LINE" "$(cat "$AGENT_HOME/.bashrc")" > "$AGENT_HOME/.bashrc"
+        # Append to .profile (no guard, order doesn't matter).
+        printf '%s\n' "$DOCKER_HOST_LINE" >> "$AGENT_HOME/.profile"
         chown "$AGENT_USER:$AGENT_USER" \
             "$AGENT_HOME/.bashrc" "$AGENT_HOME/.profile" 2>/dev/null || true
-        log_info "  DOCKER_HOST written to $AGENT_USER .bashrc and .profile"
+        log_info "  DOCKER_HOST written to $AGENT_USER .bashrc (prepended) and .profile"
         log_warn "  Proxy is not persistent — re-run 'make setup HOST=$HOST_NAME' after host reboot"
     fi
 
@@ -561,15 +609,19 @@ if [ "$GITHUB_REPOS" != "[]" ] && [ -n "$GITHUB_REPOS" ] && [ -d "$DEPLOY_KEYS_B
     _docker_exec "$CONTAINER_NAME" mkdir -p /home/dev-bot/.ssh
     _docker_exec "$CONTAINER_NAME" chmod 700 /home/dev-bot/.ssh
 
-    SSH_CONFIG_CONTENT="# BEGIN openclaw github deploy keys
-Host github.com
-  User git
-  IdentitiesOnly yes
-  StrictHostKeyChecking yes"
+    # Per-repo Host aliases: deploy keys are repo-scoped, so a shared
+    # `Host github.com` block breaks multi-repo access (see restricted_key branch).
+    SSH_CONFIG_CONTENT="# BEGIN openclaw github deploy keys"
     while IFS= read -r entry; do
         SLUG=$(echo "$entry" | jq -r '.slug')
         SSH_CONFIG_CONTENT="$SSH_CONFIG_CONTENT
-  IdentityFile /home/dev-bot/.ssh/deploy_keys/${SLUG}/id_ed25519"
+Host github.com-${SLUG}
+  HostName github.com
+  User git
+  IdentitiesOnly yes
+  StrictHostKeyChecking yes
+  IdentityFile /home/dev-bot/.ssh/deploy_keys/${SLUG}/id_ed25519
+"
     done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
     SSH_CONFIG_CONTENT="$SSH_CONFIG_CONTENT
 # END openclaw github deploy keys"
@@ -578,6 +630,27 @@ Host github.com
         su - "$AGENT_USER" -c "DOCKER_HOST=unix://$DOCKER_SOCKET_PATH PATH=\$HOME/bin:\$PATH docker exec -i $CONTAINER_NAME tee /home/dev-bot/.ssh/config" >/dev/null
     _docker_exec "$CONTAINER_NAME" chmod 600 /home/dev-bot/.ssh/config
     log_info "  SSH config written inside container for GitHub deploy keys"
+
+    # Pre-populate github.com host keys in known_hosts so StrictHostKeyChecking
+    # doesn't block the agent's first git operation. Scan from the host (where
+    # DNS/egress to github.com is available) and pipe into the container.
+    if KEYSCAN_OUTPUT=$(ssh-keyscan -t rsa,ecdsa,ed25519 github.com 2>/dev/null) && [ -n "$KEYSCAN_OUTPUT" ]; then
+        echo "$KEYSCAN_OUTPUT" | \
+            su - "$AGENT_USER" -c "DOCKER_HOST=unix://$DOCKER_SOCKET_PATH PATH=\$HOME/bin:\$PATH docker exec -i $CONTAINER_NAME tee -a /home/dev-bot/.ssh/known_hosts" >/dev/null
+        _docker_exec "$CONTAINER_NAME" chmod 644 /home/dev-bot/.ssh/known_hosts
+        log_info "  github.com host keys added to container's known_hosts"
+    else
+        log_warn "  ssh-keyscan github.com failed — agent may need to populate known_hosts manually"
+    fi
+
+    # Configure git url.insteadOf rewrites inside the container so
+    # `git@github.com:owner/repo.git` remotes are auto-rewritten.
+    while IFS= read -r entry; do
+        SLUG=$(echo "$entry" | jq -r '.slug')
+        REPO=$(echo "$entry" | jq -r '.repo')
+        _docker_exec "$CONTAINER_NAME" git config --global "url.git@github.com-${SLUG}:${REPO}.git.insteadOf" "git@github.com:${REPO}.git"
+    done < <(echo "$GITHUB_REPOS" | jq -c '.[]')
+    log_info "  git insteadOf rewrites configured inside container"
 fi
 
 # ── 6. Install session-entry ForceCommand script ───────────────────────────────

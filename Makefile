@@ -269,7 +269,7 @@ ifndef HOST
 	@exit 1
 endif
 ifdef REMOTE_KEY
-	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) $(REMOTE_USER) --purge
+	bash $(SCRIPTS_DIR)/remote/teardown.sh $(HOST) $(REMOTE_KEY) "$(or $(REMOTE_USER),$(shell whoami))" --purge
 else
 	sudo bash $(SCRIPTS_DIR)/workspace/workspace_down.sh $(HOST) --purge
 	sudo bash $(SCRIPTS_DIR)/ssh_key/remove.sh $(HOST)
